@@ -22,7 +22,9 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      # write is required here only so the GITHUB_TOKEN has push-level visibility
+      # of existing draft releases when calculating the next collision-free tag.
+      contents: write
     outputs:
       no_changes: ${{ steps.meta.outputs.no_changes }}
       tag: ${{ steps.meta.outputs.tag }}
