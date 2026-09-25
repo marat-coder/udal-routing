@@ -1,0 +1,619 @@
+name: Geo autoupdate
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_reproduction:
+        description: Reproduce immutable baseline 2026.09.25.1
+        required: true
+        type: boolean
+        default: true
+      dry_run:
+        description: Build and validate only; never create a release
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: geo-autoupdate
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      no_changes: ${{ steps.meta.outputs.no_changes }}
+      tag: ${{ steps.meta.outputs.tag }}
+      input_fingerprint: ${{ steps.meta.outputs.input_fingerprint }}
+      previous_production: ${{ steps.meta.outputs.previous_production }}
+      last_updated: ${{ steps.meta.outputs.last_updated }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASELINE_FILE: config/baseline-2026.09.25.1.json
+      POLICY_FILE: config/routing-policy.json
+
+    steps:
+      - name: Checkout automation repository
+        uses: actions/checkout@v4
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.12'
+          cache: false
+
+      - name: Verify repository configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(go version | awk '{print $3}')" = "go1.25.12"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = json.loads(Path("config/routing-policy.json").read_text())
+          b = json.loads(Path("config/baseline-2026.09.25.1.json").read_text())
+
+          assert len(p["geositeTopLevel"]) == 31
+          assert len(p["proxySites"]) == 22
+          assert len(p["geositeReserve"]) == 9
+          assert p["proxyIp"] == ["geoip:telegram"]
+          assert "geoip:ru-blocked" not in p["proxyIp"]
+          assert b["baselineRelease"] == "2026.09.25.1"
+          print("REPOSITORY_CONFIG=PASS")
+          PY
+
+      - name: Download and verify immutable baseline templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/baseline-release
+          gh release download "2026.09.25.1" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "UDAL-ROUTING.json" \
+            --pattern "MANIFEST.json" \
+            --pattern "SHA256SUMS" \
+            --dir work/baseline-release
+
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+
+          b = json.loads(Path("config/baseline-2026.09.25.1.json").read_text())
+          root = Path("work/baseline-release")
+          for name in ("UDAL-ROUTING.json", "MANIFEST.json", "SHA256SUMS"):
+              data = (root / name).read_bytes()
+              got = hashlib.sha256(data).hexdigest()
+              want = b["artifacts"][name]["sha256"]
+              if got != want:
+                  raise SystemExit(f"FAIL: baseline template hash mismatch: {name}")
+          print("BASELINE_TEMPLATES=PASS")
+          PY
+
+      - name: Discover and prepare baseline inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/inputs
+          python3 scripts/discover-inputs.py \
+            --mode baseline \
+            --baseline "$BASELINE_FILE" \
+            --output work/provenance-baseline-discovered.json
+
+          RU_ID="$(python3 -c 'import json; print(json.load(open("work/provenance-baseline-discovered.json"))["ruBlockedGeosite"]["assetId"])')"
+          IP_ID="$(python3 -c 'import json; print(json.load(open("work/provenance-baseline-discovered.json"))["geoip"]["assetId"])')"
+
+          gh api "repos/runetfreedom/russia-blocked-geosite/releases/assets/$RU_ID" \
+            -H "Accept: application/octet-stream" > work/inputs/baseline-ru-blocked.txt
+          gh api "repos/runetfreedom/russia-blocked-geoip/releases/assets/$IP_ID" \
+            -H "Accept: application/octet-stream" > work/inputs/baseline-geoip.dat
+
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          p = json.loads(Path("work/provenance-baseline-discovered.json").read_text())
+          for path, section in [
+              (Path("work/inputs/baseline-ru-blocked.txt"), "ruBlockedGeosite"),
+              (Path("work/inputs/baseline-geoip.dat"), "geoip"),
+          ]:
+              got = hashlib.sha256(path.read_bytes()).hexdigest()
+              if got != p[section]["sha256"]:
+                  raise SystemExit(f"FAIL: downloaded baseline source hash mismatch: {section}")
+          print("BASELINE_SOURCE_DOWNLOAD=PASS")
+          PY
+
+          DLC_SHA="$(python3 -c 'import json; print(json.load(open("work/provenance-baseline-discovered.json"))["domainListCommunity"]["commit"])')"
+          git init -q work/dlc-baseline
+          git -C work/dlc-baseline remote add origin https://github.com/v2fly/domain-list-community.git
+          git -C work/dlc-baseline fetch -q --depth=1 origin "$DLC_SHA"
+          git -C work/dlc-baseline checkout -q --detach FETCH_HEAD
+
+          python3 scripts/prepare-geosite.py \
+            --policy "$POLICY_FILE" \
+            --dlc-data work/dlc-baseline/data \
+            --ru-blocked work/inputs/baseline-ru-blocked.txt \
+            --output-data work/data-baseline \
+            --datprofile work/datprofile-baseline.json
+
+          SOURCE_COUNT="$(find work/data-baseline -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          test "$SOURCE_COUNT" = "42"
+
+          HASH_OUT="$(python3 scripts/hash-source-tree.py --dir work/data-baseline --exclude ru-blocked)"
+          printf '%s\n' "$HASH_OUT"
+          RELEVANT_HASH="$(printf '%s\n' "$HASH_OUT" | sed -n 's/^RELEVANT_HASH=//p')"
+          POLICY_SHA="$(python3 -c 'import json; print(json.load(open("config/baseline-2026.09.25.1.json"))["routingPolicySha256"])')"
+
+          python3 scripts/make-fingerprint.py \
+            --provenance work/provenance-baseline-discovered.json \
+            --relevant-hash "$RELEVANT_HASH" \
+            --policy-sha "$POLICY_SHA" \
+            --output work/provenance-baseline.json
+
+      - name: Prepare baseline reproduction mode
+        if: ${{ inputs.baseline_reproduction }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp work/provenance-baseline.json work/candidate-provenance.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          b = json.loads(Path("config/baseline-2026.09.25.1.json").read_text())
+          p = json.loads(Path("work/candidate-provenance.json").read_text())
+          meta = {
+              "mode": "baseline",
+              "noChanges": False,
+              "tag": b["baselineRelease"],
+              "lastUpdated": b["routingLastUpdated"],
+              "previousProduction": b["baselineRelease"],
+              "inputFingerprint": p["inputFingerprint"],
+          }
+          Path("work/candidate-meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+          PY
+
+          ln -s "$PWD/work/dlc-baseline" work/dlc-candidate
+          ln -s "$PWD/work/data-baseline" work/data-candidate
+          ln -s "$PWD/work/datprofile-baseline.json" work/datprofile-candidate.json
+          ln -s "$PWD/work/inputs/baseline-geoip.dat" work/geoip-candidate.dat
+
+      - name: Discover and prepare current upstream
+        if: ${{ !inputs.baseline_reproduction }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/discover-inputs.py \
+            --mode current \
+            --baseline "$BASELINE_FILE" \
+            --output work/provenance-current-discovered.json
+
+          RU_ID="$(python3 -c 'import json; print(json.load(open("work/provenance-current-discovered.json"))["ruBlockedGeosite"]["assetId"])')"
+          IP_ID="$(python3 -c 'import json; print(json.load(open("work/provenance-current-discovered.json"))["geoip"]["assetId"])')"
+
+          gh api "repos/runetfreedom/russia-blocked-geosite/releases/assets/$RU_ID" \
+            -H "Accept: application/octet-stream" > work/inputs/current-ru-blocked.txt
+          gh api "repos/runetfreedom/russia-blocked-geoip/releases/assets/$IP_ID" \
+            -H "Accept: application/octet-stream" > work/inputs/current-geoip.dat
+
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          p = json.loads(Path("work/provenance-current-discovered.json").read_text())
+          for path, section in [
+              (Path("work/inputs/current-ru-blocked.txt"), "ruBlockedGeosite"),
+              (Path("work/inputs/current-geoip.dat"), "geoip"),
+          ]:
+              got = hashlib.sha256(path.read_bytes()).hexdigest()
+              if got != p[section]["sha256"]:
+                  raise SystemExit(f"FAIL: current source hash mismatch: {section}")
+          print("CURRENT_SOURCE_DOWNLOAD=PASS")
+          PY
+
+          DLC_SHA="$(python3 -c 'import json; print(json.load(open("work/provenance-current-discovered.json"))["domainListCommunity"]["commit"])')"
+          git init -q work/dlc-current
+          git -C work/dlc-current remote add origin https://github.com/v2fly/domain-list-community.git
+          git -C work/dlc-current fetch -q --depth=1 origin "$DLC_SHA"
+          git -C work/dlc-current checkout -q --detach FETCH_HEAD
+
+          python3 scripts/prepare-geosite.py \
+            --policy "$POLICY_FILE" \
+            --dlc-data work/dlc-current/data \
+            --ru-blocked work/inputs/current-ru-blocked.txt \
+            --output-data work/data-current \
+            --datprofile work/datprofile-current.json
+
+          HASH_OUT="$(python3 scripts/hash-source-tree.py --dir work/data-current --exclude ru-blocked)"
+          printf '%s\n' "$HASH_OUT"
+          RELEVANT_HASH="$(printf '%s\n' "$HASH_OUT" | sed -n 's/^RELEVANT_HASH=//p')"
+
+          python3 scripts/make-fingerprint.py \
+            --provenance work/provenance-current-discovered.json \
+            --relevant-hash "$RELEVANT_HASH" \
+            --policy "$POLICY_FILE" \
+            --output work/provenance-current.json
+
+          BASE_FP="$(python3 -c 'import json; print(json.load(open("work/provenance-baseline.json"))["inputFingerprint"])')"
+          CUR_FP="$(python3 -c 'import json; print(json.load(open("work/provenance-current.json"))["inputFingerprint"])')"
+
+          python3 scripts/release-state.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --baseline "$BASELINE_FILE" \
+            --baseline-fingerprint "$BASE_FP" \
+            --current-fingerprint "$CUR_FP" \
+            --output work/release-state.json
+
+          python3 - <<'PY'
+          import json
+          from datetime import datetime
+          from pathlib import Path
+
+          prov = json.loads(Path("work/provenance-current.json").read_text())
+          state = json.loads(Path("work/release-state.json").read_text())
+
+          timestamps = [
+              prov["domainListCommunity"]["timestamp"],
+              prov["ruBlockedGeosite"]["publishedAt"],
+              prov["geoip"]["publishedAt"],
+          ]
+          newest = max(int(datetime.fromisoformat(x.replace("Z", "+00:00")).timestamp()) for x in timestamps)
+          last_updated = max(int(state["nextLastUpdatedFloor"]), newest)
+
+          meta = {
+              "mode": "current",
+              "noChanges": bool(state["noChanges"]),
+              "tag": state["newTag"],
+              "lastUpdated": last_updated,
+              "previousProduction": state["previousProductionRelease"],
+              "inputFingerprint": prov["inputFingerprint"],
+          }
+          Path("work/candidate-meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+          PY
+
+          cp work/provenance-current.json work/candidate-provenance.json
+          ln -s "$PWD/work/dlc-current" work/dlc-candidate
+          ln -s "$PWD/work/data-current" work/data-candidate
+          ln -s "$PWD/work/datprofile-current.json" work/datprofile-candidate.json
+          ln -s "$PWD/work/inputs/current-geoip.dat" work/geoip-candidate.dat
+
+      - name: Export candidate metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          m = json.load(open("work/candidate-meta.json"))
+          print("no_changes=" + str(m["noChanges"]).lower())
+          print("tag=" + m["tag"])
+          print("input_fingerprint=" + m["inputFingerprint"])
+          print("previous_production=" + m["previousProduction"])
+          print("last_updated=" + str(m["lastUpdated"]))
+          PY
+
+          cat work/candidate-meta.json
+
+      - name: Stop cleanly when inputs are unchanged
+        if: ${{ steps.meta.outputs.no_changes == 'true' }}
+        shell: bash
+        run: |
+          echo "RESULT=NO_CHANGES"
+
+      - name: Build GeoSite and GeoIP
+        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/bundle work/geosite-out
+
+          DLC_SHA="$(python3 -c 'import json; print(json.load(open("work/candidate-provenance.json"))["domainListCommunity"]["commit"])')"
+          GEOIP_SHA="$(python3 -c 'import json; print(json.load(open("work/candidate-provenance.json"))["geoip"]["sha256"])')"
+
+          scripts/build-geosite.sh \
+            work/dlc-candidate \
+            work/data-candidate \
+            work/datprofile-candidate.json \
+            work/geosite-out \
+            "$DLC_SHA"
+
+          cp work/geosite-out/UDAL-GEOSITE.dat work/bundle/UDAL-GEOSITE.dat
+
+          scripts/build-geoip.sh \
+            work/geoip-candidate.dat \
+            work/bundle \
+            "$GEOIP_SHA"
+
+      - name: Install and verify pinned Xray
+        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          XRAY_VERSION="$(python3 -c 'import json; print(json.load(open("config/toolchain-lock.json"))["xray"]["version"])')"
+          XRAY_ASSET="$(python3 -c 'import json; print(json.load(open("config/toolchain-lock.json"))["xray"]["linuxAmd64Asset"])')"
+          XRAY_SHA="$(python3 -c 'import json; print(json.load(open("config/toolchain-lock.json"))["xray"]["linuxAmd64Sha256"])')"
+
+          gh api "repos/XTLS/Xray-core/releases/tags/v$XRAY_VERSION" > work/xray-release.json
+          XRAY_ID="$(python3 - "$XRAY_ASSET" <<'PY'
+          import json, sys
+          obj = json.load(open("work/xray-release.json"))
+          hits = [a for a in obj["assets"] if a["name"] == sys.argv[1]]
+          if len(hits) != 1:
+              raise SystemExit("FAIL: pinned Xray asset not found")
+          print(hits[0]["id"])
+          PY
+          )"
+
+          gh api "repos/XTLS/Xray-core/releases/assets/$XRAY_ID" \
+            -H "Accept: application/octet-stream" > work/xray.zip
+          test "$(sha256sum work/xray.zip | awk '{print $1}')" = "$XRAY_SHA"
+
+          mkdir -p work/xray
+          unzip -q work/xray.zip -d work/xray
+          chmod +x work/xray/xray
+          work/xray/xray version | head -n 1
+
+      - name: Validate geodata with Xray
+        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/validate-geodata.sh \
+            work/dlc-candidate \
+            work/bundle/UDAL-GEOSITE.dat \
+            work/bundle/UDAL-GEOIP.dat \
+            work/xray/xray \
+            "$POLICY_FILE" \
+            config/validation-contract.json \
+            work/geodata-validation
+
+      - name: Build version-pinned routing
+        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/build-routing.py \
+            --template work/baseline-release/UDAL-ROUTING.json \
+            --policy "$POLICY_FILE" \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "${{ steps.meta.outputs.tag }}" \
+            --last-updated "${{ steps.meta.outputs.last_updated }}" \
+            --output work/bundle/UDAL-ROUTING.json
+
+      - name: Pre-manifest secret scan
+        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/scan-secrets.py --repo-root . --bundle work/bundle
+
+      - name: Build manifest and SHA256SUMS
+        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
+            EXTRA+=(--baseline-pass-through)
+          fi
+
+          python3 scripts/make-manifest.py \
+            --template work/baseline-release/MANIFEST.json \
+            --baseline "$BASELINE_FILE" \
+            --policy "$POLICY_FILE" \
+            --provenance work/candidate-provenance.json \
+            --bundle work/bundle \
+            --tag "${{ steps.meta.outputs.tag }}" \
+            --previous-production "${{ steps.meta.outputs.previous_production }}" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}" \
+            --output work/bundle/MANIFEST.json \
+            "${EXTRA[@]}"
+
+          python3 scripts/make-sha256sums.py --bundle work/bundle
+
+      - name: Final validation and secret scan
+        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/scan-secrets.py --repo-root . --bundle work/bundle
+
+          python3 scripts/validate-artifacts.py \
+            --bundle work/bundle \
+            --policy "$POLICY_FILE" \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "${{ steps.meta.outputs.tag }}"
+
+      - name: Baseline exact reproduction gate
+        if: ${{ inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+
+          baseline = json.loads(Path("config/baseline-2026.09.25.1.json").read_text())
+          bundle = Path("work/bundle")
+
+          for name, md in baseline["artifacts"].items():
+              path = bundle / name
+              if not path.is_file():
+                  raise SystemExit(f"FAIL: baseline output missing {name}")
+              data = path.read_bytes()
+              got_sha = hashlib.sha256(data).hexdigest()
+              if got_sha != md["sha256"] or len(data) != md["size"]:
+                  raise SystemExit(f"FAIL: baseline exact reproduction mismatch: {name}")
+              print(f"{name}=PASS")
+
+          print("BASELINE_REPRODUCTION=PASS")
+          PY
+
+      - name: Upload validated build artifact
+        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: geo-candidate-${{ github.run_id }}
+          path: |
+            work/bundle
+            work/candidate-provenance.json
+            work/candidate-meta.json
+          if-no-files-found: error
+          retention-days: 7
+
+  draft:
+    needs: build
+    if: ${{ !inputs.baseline_reproduction && !inputs.dry_run && needs.build.outputs.no_changes == 'false' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Download validated candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: geo-candidate-${{ github.run_id }}
+          path: work
+
+      - name: Re-verify local candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find work/bundle -maxdepth 1 -type f | wc -l | tr -d ' ')" = "5"
+          (
+            cd work/bundle
+            sha256sum -c SHA256SUMS
+          )
+
+      - name: Create and verify draft release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ needs.build.outputs.tag }}"
+          FP="${{ needs.build.outputs.input_fingerprint }}"
+          PREV="${{ needs.build.outputs.previous_production }}"
+          LAST_UPDATED="${{ needs.build.outputs.last_updated }}"
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "FAIL: tag already exists: $TAG" >&2
+            exit 1
+          fi
+
+          if gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            | python3 -c 'import json,sys; tag=sys.argv[1]; sys.exit(0 if any(r.get("tag_name")==tag for r in json.load(sys.stdin)) else 1)' "$TAG"
+          then
+            echo "FAIL: release already exists: $TAG" >&2
+            exit 1
+          fi
+
+          python3 - "$TAG" "$FP" "$PREV" "$LAST_UPDATED" <<'PY'
+          import hashlib, json, os, sys
+          from pathlib import Path
+
+          tag, fp, previous, last_updated = sys.argv[1:]
+          prov = json.loads(Path("work/candidate-provenance.json").read_text())
+          bundle = Path("work/bundle")
+
+          lines = [
+              "HAPP routing geo-update candidate",
+              "",
+              f"Previous production: {previous}",
+              f"v2fly commit: {prov['domainListCommunity']['commit']}",
+              f"v2fly relevant hash: {prov['domainListCommunity']['relevantHash']}",
+              f"RunetFreedom geosite release: {prov['ruBlockedGeosite']['release']}",
+              f"RunetFreedom ru-blocked SHA256: {prov['ruBlockedGeosite']['sha256']}",
+              f"RunetFreedom GeoIP release: {prov['geoip']['release']}",
+              f"RunetFreedom GeoIP SHA256: {prov['geoip']['sha256']}",
+              "Validation: PASS",
+              f"Workflow run ID: {os.environ['GITHUB_RUN_ID']}",
+              "",
+              "SHA256:",
+          ]
+          for name in ["UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","MANIFEST.json","SHA256SUMS"]:
+              h = hashlib.sha256((bundle / name).read_bytes()).hexdigest()
+              lines.append(f"{h}  {name}")
+          lines.extend([
+              "",
+              f"INPUT_FINGERPRINT={fp}",
+              f"ROUTING_LAST_UPDATED={last_updated}",
+              "AUTO_PUBLISH=NO",
+          ])
+          Path("work/release-notes.txt").write_text("\n".join(lines) + "\n")
+          payload = {
+              "tag_name": tag,
+              "target_commitish": os.environ["GITHUB_SHA"],
+              "name": tag,
+              "body": Path("work/release-notes.txt").read_text(),
+              "draft": True,
+              "prerelease": False,
+          }
+          Path("work/create-release.json").write_text(json.dumps(payload))
+          PY
+
+          RELEASE_JSON="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" --input work/create-release.json)"
+          RID="$(printf '%s' "$RELEASE_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+
+          cleanup() {
+            echo "Draft creation failed; removing draft created by this run." >&2
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$RID" >/dev/null 2>&1 || true
+          }
+          trap cleanup ERR
+
+          gh release upload "$TAG" \
+            work/bundle/UDAL-GEOSITE.dat \
+            work/bundle/UDAL-GEOIP.dat \
+            work/bundle/UDAL-ROUTING.json \
+            work/bundle/MANIFEST.json \
+            work/bundle/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY"
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RID" > work/remote-release.json
+
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+
+          r = json.loads(Path("work/remote-release.json").read_text())
+          if r.get("draft") is not True or r.get("published_at") is not None:
+              raise SystemExit("FAIL: release is not draft")
+          assets = r.get("assets", [])
+          expected = {"UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","MANIFEST.json","SHA256SUMS"}
+          if {a["name"] for a in assets} != expected or len(assets) != 5:
+              raise SystemExit("FAIL: remote draft asset set")
+          for a in assets:
+              local = hashlib.sha256((Path("work/bundle") / a["name"]).read_bytes()).hexdigest()
+              if a.get("digest") != "sha256:" + local:
+                  raise SystemExit(f"FAIL: remote digest mismatch {a['name']}")
+          print("REMOTE_DRAFT_DIGESTS=PASS")
+          PY
+
+          mkdir work/remote-download
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir work/remote-download
+
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          local = Path("work/bundle")
+          remote = Path("work/remote-download")
+          expected = sorted(["UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","MANIFEST.json","SHA256SUMS"])
+          if sorted(x.name for x in remote.iterdir() if x.is_file()) != expected:
+              raise SystemExit("FAIL: downloaded draft asset set")
+          for name in expected:
+              a = hashlib.sha256((local / name).read_bytes()).hexdigest()
+              b = hashlib.sha256((remote / name).read_bytes()).hexdigest()
+              if a != b:
+                  raise SystemExit(f"FAIL: downloaded draft mismatch {name}")
+          print("REMOTE_DRAFT_DOWNLOAD=PASS")
+          PY
+
+          trap - ERR
+          echo "DRAFT_TAG=$TAG"
+          echo "DRAFT_PUBLISHED=NO"

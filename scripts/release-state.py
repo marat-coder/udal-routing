@@ -67,7 +67,7 @@ def main():
 
         assets = r.get("assets", [])
         names = {x["name"] for x in assets}
-        if tag != baseline_tag and names and names != EXPECTED_ASSETS:
+        if tag != baseline_tag and names != EXPECTED_ASSETS:
             raise SystemExit(f"FAIL: incomplete versioned release/draft exists: {tag}")
 
         body = r.get("body") or ""
