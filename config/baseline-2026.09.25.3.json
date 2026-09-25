@@ -56,5 +56,11 @@
     ],
     "broadRuBlockedGeoipActive": false
   },
-  "routingPolicySha256": "8654b9f9b941e0e43c384eee5adb152d113916286cc75abc5faa8a17a0133942"
+  "routingPolicySha256": "8654b9f9b941e0e43c384eee5adb152d113916286cc75abc5faa8a17a0133942",
+  "fingerprintContract": {
+    "baselineInputFingerprint": "84fc3cf8124fcbdc1a6c753ce4825211bf4b7c45e940265ce2b7d94f29c49c9f",
+    "legacyFingerprintOptionalTags": [
+      "2026.09.25.1"
+    ]
+  }
 }

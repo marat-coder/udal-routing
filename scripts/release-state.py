@@ -35,8 +35,36 @@ def download_asset(repo, asset_id):
         capture_output=True,
     )
     if p.returncode != 0:
-        raise SystemExit("FAIL: unable to read routing asset from release")
+        raise SystemExit("FAIL: unable to read release asset")
     return p.stdout
+
+
+def body_fingerprint(body):
+    m = re.search(r"(?m)^INPUT_FINGERPRINT=([0-9a-f]{64})$", body or "")
+    return m.group(1) if m else None
+
+
+def manifest_fingerprint(data):
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except Exception:
+        raise SystemExit("FAIL: cannot parse MANIFEST.json for fingerprint contract")
+
+    if obj.get("manifestSchema") == 2:
+        fp = obj.get("buildPlan", {}).get("inputFingerprint")
+    else:
+        fp = obj.get("automation", {}).get("inputFingerprint")
+
+    if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-f]{64}", fp):
+        raise SystemExit("FAIL: MANIFEST.json lacks valid input fingerprint")
+    return fp
+
+
+def release_manifest_fingerprint(repo, assets):
+    manifest_assets = [x for x in assets if x["name"] == "MANIFEST.json"]
+    if len(manifest_assets) != 1:
+        raise SystemExit("FAIL: baseline release must contain exactly one MANIFEST.json")
+    return manifest_fingerprint(download_asset(repo, manifest_assets[0]["id"]))
 
 
 def main():
@@ -51,6 +79,22 @@ def main():
     baseline = json.loads(Path(a.baseline).read_text(encoding="utf-8"))
     baseline_tag = baseline["baselineRelease"]
     max_last = int(baseline["routingLastUpdated"])
+
+    fp_contract = baseline.get("fingerprintContract", {})
+    locked_baseline_fp = fp_contract.get("baselineInputFingerprint")
+    legacy_optional = fp_contract.get("legacyFingerprintOptionalTags", [])
+
+    if locked_baseline_fp != a.baseline_fingerprint:
+        raise SystemExit("FAIL: computed baseline fingerprint does not match baseline lock")
+    if not isinstance(legacy_optional, list) or len(legacy_optional) != len(set(legacy_optional)):
+        raise SystemExit("FAIL: invalid legacy fingerprint allowlist")
+    if baseline_tag in legacy_optional:
+        raise SystemExit("FAIL: current baseline cannot be fingerprint-exempt")
+    for tag in legacy_optional:
+        if not isinstance(tag, str) or not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\.\d+", tag):
+            raise SystemExit("FAIL: invalid tag in legacy fingerprint allowlist")
+
+    legacy_optional = set(legacy_optional)
 
     releases = gh(f"repos/{a.repo}/releases?per_page=100")
     published = [r for r in releases if not r.get("draft") and r.get("published_at")]
@@ -70,11 +114,21 @@ def main():
         if tag != baseline_tag and names != EXPECTED_ASSETS:
             raise SystemExit(f"FAIL: incomplete versioned release/draft exists: {tag}")
 
-        body = r.get("body") or ""
-        m = re.search(r"(?m)^INPUT_FINGERPRINT=([0-9a-f]{64})$", body)
-        if m:
-            existing_fingerprints.add(m.group(1))
-        elif tag != baseline_tag and names == EXPECTED_ASSETS:
+        body_fp = body_fingerprint(r.get("body") or "")
+
+        if tag == baseline_tag:
+            baseline_release_fp = body_fp or release_manifest_fingerprint(a.repo, assets)
+            if baseline_release_fp != a.baseline_fingerprint:
+                raise SystemExit("FAIL: current production fingerprint contract mismatch")
+            existing_fingerprints.add(baseline_release_fp)
+            print(f"CURRENT_PRODUCTION_FINGERPRINT_CONTRACT=ENFORCED:{tag}")
+        elif body_fp:
+            existing_fingerprints.add(body_fp)
+        elif tag in legacy_optional:
+            if r.get("draft") or not r.get("published_at") or r.get("immutable") is not True:
+                raise SystemExit(f"FAIL: legacy fingerprint exemption requires published immutable release: {tag}")
+            print(f"LEGACY_FINGERPRINT_ALLOWLIST_ACCEPTED={tag}")
+        elif names == EXPECTED_ASSETS:
             raise SystemExit(f"FAIL: versioned candidate lacks fingerprint marker: {tag}")
 
         route_assets = [x for x in assets if x["name"] == "UDAL-ROUTING.json"]
