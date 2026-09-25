@@ -8,14 +8,20 @@ from pathlib import Path
 p = argparse.ArgumentParser()
 p.add_argument("--provenance", required=True)
 p.add_argument("--relevant-hash", required=True)
-p.add_argument("--policy", required=True)
+g = p.add_mutually_exclusive_group(required=True)
+g.add_argument("--policy")
+g.add_argument("--policy-sha")
 p.add_argument("--output", required=True)
 a = p.parse_args()
 
-prov_path = Path(a.provenance)
-prov = json.loads(prov_path.read_text(encoding="utf-8"))
-policy_bytes = Path(a.policy).read_bytes()
-policy_sha = hashlib.sha256(policy_bytes).hexdigest()
+prov = json.loads(Path(a.provenance).read_text(encoding="utf-8"))
+
+if a.policy:
+    policy_sha = hashlib.sha256(Path(a.policy).read_bytes()).hexdigest()
+else:
+    policy_sha = a.policy_sha.lower()
+    if len(policy_sha) != 64 or any(c not in "0123456789abcdef" for c in policy_sha):
+        raise SystemExit("FAIL: invalid policy SHA256")
 
 prov["domainListCommunity"]["relevantHash"] = a.relevant_hash
 prov["routingPolicySha256"] = policy_sha
