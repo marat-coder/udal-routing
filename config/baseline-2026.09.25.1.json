@@ -54,5 +54,6 @@
       "geoip:telegram"
     ],
     "broadRuBlockedGeoipActive": false
-  }
+  },
+  "routingPolicySha256": "322cb0e5559eddc68683e059f8285f9b561686763402889cc70f0f4bf0bec938"
 }
