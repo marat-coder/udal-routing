@@ -20,12 +20,19 @@ def sha256(path):
 p = argparse.ArgumentParser()
 p.add_argument("--bundle", required=True)
 p.add_argument("--policy", required=True)
+p.add_argument("--contract", required=True)
 p.add_argument("--repo", required=True)
 p.add_argument("--tag", required=True)
 a = p.parse_args()
 
 bundle = Path(a.bundle)
 policy = json.loads(Path(a.policy).read_text(encoding="utf-8"))
+contract = json.loads(Path(a.contract).read_text(encoding="utf-8"))
+
+if policy["proxyIp"] != contract["proxyIpExact"]:
+    raise SystemExit("FAIL: ProxyIp exact contract mismatch")
+if contract["broadRuBlockedGeoipActive"] is not False:
+    raise SystemExit("FAIL: broad geoip:ru-blocked contract must remain false")
 actual = {x.name for x in bundle.iterdir() if x.is_file()}
 if actual != EXPECTED:
     raise SystemExit(f"FAIL: asset set mismatch {sorted(actual)}")

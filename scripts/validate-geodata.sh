@@ -52,11 +52,14 @@ from pathlib import Path
 policy = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 contract = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 
+if policy["proxyIp"] != contract["proxyIpExact"]:
+    raise SystemExit(f"FAIL: ProxyIp exact contract mismatch: {policy['proxyIp']}")
+
 required_geoip = [x.removeprefix("geoip:") for x in policy["proxyIp"]]
 missing = sorted(set(required_geoip) - set(contract["geoipValidationCategories"]))
 if missing:
     raise SystemExit(f"FAIL: routing ProxyIp categories are not covered by Xray validation contract: {missing}")
-if "ru-blocked" in required_geoip:
+if contract["broadRuBlockedGeoipActive"] is not False or "ru-blocked" in required_geoip:
     raise SystemExit("FAIL: broad geoip:ru-blocked is active")
 
 cfg = {

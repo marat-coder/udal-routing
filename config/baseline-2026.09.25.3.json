@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "baselineRelease": "2026.09.25.3",
+  "immutable": true,
+  "routingLastUpdated": 1790327432,
+  "sources": {
+    "domainListCommunity": {
+      "repository": "v2fly/domain-list-community",
+      "commit": "a5731758ed6bc9620b0e146ed24b07b9131893cf"
+    },
+    "ruBlockedGeosite": {
+      "repository": "runetfreedom/russia-blocked-geosite",
+      "release": "202608101553",
+      "asset": "ru-blocked.txt",
+      "size": 1731646,
+      "sha256": "8b8d8d1ce37edbdc550bbb73f473f072b15432bf42b1fac5b35f95a603fec77d"
+    },
+    "geoip": {
+      "repository": "runetfreedom/russia-blocked-geoip",
+      "release": "202609250840",
+      "asset": "geoip.dat",
+      "size": 18083158,
+      "sha256": "0918202112fa7cd038dc81254f8ae637f8aaf9b02311898ccd22ba079592cbac",
+      "model": "FULL_PINNED_RUNETFREEDOM_BYTE_FOR_BYTE"
+    }
+  },
+  "artifacts": {
+    "UDAL-GEOSITE.dat": {
+      "size": 1617679,
+      "sha256": "efecbcc4482b0dfe7ca7676dcd9d082a8b47d2756f8258c22a04733cfd7b00f7"
+    },
+    "UDAL-GEOIP.dat": {
+      "size": 18083158,
+      "sha256": "0918202112fa7cd038dc81254f8ae637f8aaf9b02311898ccd22ba079592cbac"
+    },
+    "UDAL-ROUTING.json": {
+      "size": 1800,
+      "sha256": "f0320584f95fd1fdc65b329d90935f1f15a401f60d5d8da922c7174d826e7b94"
+    },
+    "MANIFEST.json": {
+      "size": 4563,
+      "sha256": "14a3a8709b121034fa9725014137d13815d6b4d1e782f88417f69d077a5a5d40"
+    },
+    "SHA256SUMS": {
+      "size": 328,
+      "sha256": "39529bf92d70828eb5c51b437f5daafacb698abcba316057da2eaaf44346ce8e"
+    }
+  },
+  "contracts": {
+    "geositeTotal": 31,
+    "proxySitesActive": 22,
+    "geositeReserve": 9,
+    "proxyIp": [
+      "geoip:telegram",
+      "geoip:facebook"
+    ],
+    "broadRuBlockedGeoipActive": false
+  },
+  "routingPolicySha256": "8654b9f9b941e0e43c384eee5adb152d113916286cc75abc5faa8a17a0133942"
+}

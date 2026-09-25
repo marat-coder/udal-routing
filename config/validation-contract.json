@@ -19,5 +19,10 @@
     "ru-blocked-community",
     "re-filter",
     "ru-whitelist"
-  ]
+  ],
+  "proxyIpExact": [
+    "geoip:telegram",
+    "geoip:facebook"
+  ],
+  "broadRuBlockedGeoipActive": false
 }

@@ -4,7 +4,7 @@
     "version": "1.25.12"
   },
   "domainListCommunityGenerator": {
-    "baselineCommit": "c1c2cf0d252871e8739747714df06e8d2671f72f",
+    "baselineCommit": "a5731758ed6bc9620b0e146ed24b07b9131893cf",
     "goModBlobSha": "62ac91d888002402b7c9b5fa8047a712c27817bf",
     "goSumBlobSha": "46af07af04fcfdf946aae63d9ddd0319330ea45e",
     "moduleVersions": {

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       baseline_reproduction:
-        description: Reproduce immutable baseline 2026.09.25.1
+        description: Reproduce immutable baseline 2026.09.25.3
         required: true
         type: boolean
         default: true
@@ -33,9 +33,9 @@ jobs:
       last_updated: ${{ steps.meta.outputs.last_updated }}
     env:
       GH_TOKEN: ${{ github.token }}
-      BASELINE_FILE: config/baseline-2026.09.25.1.json
+      BASELINE_FILE: config/baseline-2026.09.25.3.json
       POLICY_FILE: config/routing-policy.json
-      BASELINE_POLICY_FILE: config/baseline-routing-policy-2026.09.25.1.json
+      BASELINE_POLICY_FILE: config/baseline-routing-policy-2026.09.25.3.json
 
     steps:
       - name: Checkout automation repository
@@ -57,8 +57,8 @@ jobs:
           from pathlib import Path
 
           p = json.loads(Path("config/routing-policy.json").read_text())
-          bp = json.loads(Path("config/baseline-routing-policy-2026.09.25.1.json").read_text())
-          b = json.loads(Path("config/baseline-2026.09.25.1.json").read_text())
+          bp = json.loads(Path("config/baseline-routing-policy-2026.09.25.3.json").read_text())
+          b = json.loads(Path("config/baseline-2026.09.25.3.json").read_text())
 
           assert len(p["geositeTopLevel"]) == 31
           assert len(p["proxySites"]) == 22
@@ -68,15 +68,13 @@ jobs:
           assert "geosite:meta" not in p["proxySites"]
           assert "meta" not in p["geositeTopLevel"]
 
-          assert bp["proxyIp"] == ["geoip:telegram"]
-          p_cmp = dict(p)
-          bp_cmp = dict(bp)
-          p_cmp.pop("proxyIp")
-          bp_cmp.pop("proxyIp")
-          assert p_cmp == bp_cmp
+          assert bp["proxyIp"] == ["geoip:telegram", "geoip:facebook"]
+          assert bp == p
 
-          assert b["baselineRelease"] == "2026.09.25.1"
-          print("ROUTING_POLICY_MINIMAL_DIFF=PASS")
+          assert b["baselineRelease"] == "2026.09.25.3"
+          assert b["contracts"]["proxyIp"] == ["geoip:telegram", "geoip:facebook"]
+          assert b["contracts"]["broadRuBlockedGeoipActive"] is False
+          print("ROUTING_POLICY_BASELINE_LOCK=PASS")
           print("REPOSITORY_CONFIG=PASS")
           PY
 
@@ -85,7 +83,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p work/baseline-release
-          gh release download "2026.09.25.1" \
+          BASELINE_TAG="$(python3 -c 'import json; print(json.load(open("config/baseline-2026.09.25.3.json"))["baselineRelease"])')"
+          gh release download "$BASELINE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "UDAL-ROUTING.json" \
             --pattern "MANIFEST.json" \
@@ -96,7 +95,7 @@ jobs:
           import hashlib, json
           from pathlib import Path
 
-          b = json.loads(Path("config/baseline-2026.09.25.1.json").read_text())
+          b = json.loads(Path("config/baseline-2026.09.25.3.json").read_text())
           root = Path("work/baseline-release")
           for name in ("UDAL-ROUTING.json", "MANIFEST.json", "SHA256SUMS"):
               data = (root / name).read_bytes()
@@ -158,7 +157,7 @@ jobs:
           HASH_OUT="$(python3 scripts/hash-source-tree.py --dir work/data-baseline --exclude ru-blocked)"
           printf '%s\n' "$HASH_OUT"
           RELEVANT_HASH="$(printf '%s\n' "$HASH_OUT" | sed -n 's/^RELEVANT_HASH=//p')"
-          POLICY_SHA="$(python3 -c 'import json; print(json.load(open("config/baseline-2026.09.25.1.json"))["routingPolicySha256"])')"
+          POLICY_SHA="$(python3 -c 'import json; print(json.load(open("config/baseline-2026.09.25.3.json"))["routingPolicySha256"])')"
 
           python3 scripts/make-fingerprint.py \
             --provenance work/provenance-baseline-discovered.json \
@@ -177,7 +176,7 @@ jobs:
           import json
           from pathlib import Path
 
-          b = json.loads(Path("config/baseline-2026.09.25.1.json").read_text())
+          b = json.loads(Path("config/baseline-2026.09.25.3.json").read_text())
           p = json.loads(Path("work/candidate-provenance.json").read_text())
           meta = {
               "mode": "baseline",
@@ -427,11 +426,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          EXTRA=()
-          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
-            EXTRA+=(--baseline-pass-through)
-          fi
-
           POLICY_FOR_BUILD="$POLICY_FILE"
           if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
             POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
@@ -447,8 +441,7 @@ jobs:
             --previous-production "${{ steps.meta.outputs.previous_production }}" \
             --workflow-run-id "$GITHUB_RUN_ID" \
             --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}" \
-            --output work/bundle/MANIFEST.json \
-            "${EXTRA[@]}"
+            --output work/bundle/MANIFEST.json
 
           python3 scripts/make-sha256sums.py --bundle work/bundle
 
@@ -467,6 +460,7 @@ jobs:
           python3 scripts/validate-artifacts.py \
             --bundle work/bundle \
             --policy "$POLICY_FOR_BUILD" \
+            --contract config/validation-contract.json \
             --repo "$GITHUB_REPOSITORY" \
             --tag "${{ steps.meta.outputs.tag }}"
 
@@ -476,21 +470,57 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import hashlib, json
+          import hashlib, json, os
           from pathlib import Path
 
-          baseline = json.loads(Path("config/baseline-2026.09.25.1.json").read_text())
+          baseline = json.loads(Path(os.environ["BASELINE_FILE"]).read_text())
           bundle = Path("work/bundle")
+          failed = []
 
           for name, md in baseline["artifacts"].items():
               path = bundle / name
               if not path.is_file():
-                  raise SystemExit(f"FAIL: baseline output missing {name}")
+                  print(f"{name}=FAIL_MISSING")
+                  failed.append(name)
+                  continue
               data = path.read_bytes()
               got_sha = hashlib.sha256(data).hexdigest()
-              if got_sha != md["sha256"] or len(data) != md["size"]:
-                  raise SystemExit(f"FAIL: baseline exact reproduction mismatch: {name}")
-              print(f"{name}=PASS")
+              got_size = len(data)
+              if got_sha != md["sha256"] or got_size != md["size"]:
+                  print(f"{name}=FAIL")
+                  print(f"{name}_EXPECTED_SHA256={md['sha256']}")
+                  print(f"{name}_ACTUAL_SHA256={got_sha}")
+                  print(f"{name}_EXPECTED_SIZE={md['size']}")
+                  print(f"{name}_ACTUAL_SIZE={got_size}")
+                  failed.append(name)
+              else:
+                  print(f"{name}=PASS")
+
+          if "MANIFEST.json" in failed:
+              expected = json.loads(Path("work/baseline-release/MANIFEST.json").read_text())
+              actual = json.loads((bundle / "MANIFEST.json").read_text())
+              def walk(prefix, a, b):
+                  if type(a) is not type(b):
+                      print(f"MANIFEST_DIFF {prefix}: expected={a!r} actual={b!r}")
+                      return
+                  if isinstance(a, dict):
+                      for key in sorted(set(a) | set(b)):
+                          p = f"{prefix}.{key}" if prefix else key
+                          if key not in a:
+                              print(f"MANIFEST_DIFF {p}: expected=<missing> actual={b[key]!r}")
+                          elif key not in b:
+                              print(f"MANIFEST_DIFF {p}: expected={a[key]!r} actual=<missing>")
+                          else:
+                              walk(p, a[key], b[key])
+                  elif isinstance(a, list):
+                      if a != b:
+                          print(f"MANIFEST_DIFF {prefix}: expected={a!r} actual={b!r}")
+                  elif a != b:
+                      print(f"MANIFEST_DIFF {prefix}: expected={a!r} actual={b!r}")
+              walk("", expected, actual)
+
+          if failed:
+              raise SystemExit("FAIL: baseline exact reproduction mismatch: " + ",".join(failed))
 
           print("BASELINE_REPRODUCTION=PASS")
           PY
