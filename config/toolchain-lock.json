@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "go": {
+    "version": "1.25.12"
+  },
+  "xray": {
+    "version": "26.3.23",
+    "linuxAmd64Asset": "Xray-linux-64.zip",
+    "linuxAmd64Sha256": "8985f9dac52714194cd86368e6361f234b9e26017603b24d58d83041197c5db5"
+  },
+  "geositeGenerator": {
+    "module": "github.com/v2fly/domain-list-community",
+    "v2rayCore": "v5.52.0",
+    "protobufGo": {
+      "version": "v1.36.12",
+      "commit": "cdd4c5f7406e82462949c7a65defa9f3029c162d"
+    },
+    "xSys": {
+      "version": "v0.46.0",
+      "commit": "d58dcfa8a74514c0ef0fc401259156c5e2fc9ff5"
+    },
+    "xdg": "v0.5.3",
+    "golangProtobuf": "v1.5.4"
+  }
+}
