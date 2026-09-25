@@ -2,7 +2,6 @@
 import argparse
 import hashlib
 import json
-import shutil
 from pathlib import Path
 
 
@@ -19,26 +18,43 @@ def meta(path):
 
 
 p = argparse.ArgumentParser()
-p.add_argument("--template", required=True)
-p.add_argument("--baseline", required=True)
+p.add_argument("--manifest-config", required=True)
+p.add_argument("--toolchain-lock", required=True)
+p.add_argument("--validation-contract", required=True)
 p.add_argument("--policy", required=True)
 p.add_argument("--provenance", required=True)
 p.add_argument("--bundle", required=True)
 p.add_argument("--tag", required=True)
 p.add_argument("--previous-production", required=True)
-p.add_argument("--workflow-run-id", required=True)
+p.add_argument("--last-updated", type=int, required=True)
 p.add_argument("--input-fingerprint", required=True)
 p.add_argument("--output", required=True)
-p.add_argument("--baseline-pass-through", action="store_true")
 a = p.parse_args()
 
-template = Path(a.template)
-baseline = json.loads(Path(a.baseline).read_text(encoding="utf-8"))
+manifest_config_path = Path(a.manifest_config)
+toolchain_path = Path(a.toolchain_lock)
+contract_path = Path(a.validation_contract)
 policy_path = Path(a.policy)
-policy = json.loads(policy_path.read_text(encoding="utf-8"))
-provenance = json.loads(Path(a.provenance).read_text(encoding="utf-8"))
+provenance_path = Path(a.provenance)
 bundle = Path(a.bundle)
 output = Path(a.output)
+
+manifest_config = json.loads(manifest_config_path.read_text(encoding="utf-8"))
+toolchain = json.loads(toolchain_path.read_text(encoding="utf-8"))
+contract = json.loads(contract_path.read_text(encoding="utf-8"))
+policy = json.loads(policy_path.read_text(encoding="utf-8"))
+provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+
+if manifest_config["productionManifestSchema"] != 2:
+    raise SystemExit("FAIL: production manifest schema must be 2")
+if manifest_config["legacyManifest"]["release"] != "2026.09.25.3":
+    raise SystemExit("FAIL: unexpected legacy manifest release")
+if manifest_config["legacyManifest"]["status"] != "KNOWN_RUNTIME_METADATA_NONDETERMINISM":
+    raise SystemExit("FAIL: legacy manifest status mismatch")
+if policy["proxyIp"] != contract["proxyIpExact"]:
+    raise SystemExit("FAIL: ProxyIp exact contract mismatch")
+if contract["broadRuBlockedGeoipActive"] is not False:
+    raise SystemExit("FAIL: broad geoip:ru-blocked contract must remain false")
 
 required = {
     "UDAL-GEOSITE.dat": bundle / "UDAL-GEOSITE.dat",
@@ -49,28 +65,7 @@ for name, path in required.items():
     if not path.is_file():
         raise SystemExit(f"FAIL: missing artifact {name}")
 
-if a.baseline_pass_through:
-    if a.tag != baseline["baselineRelease"]:
-        raise SystemExit("FAIL: pass-through tag is not baseline")
-    for name, path in required.items():
-        if sha256(path) != baseline["artifacts"][name]["sha256"]:
-            raise SystemExit(f"FAIL: baseline artifact mismatch {name}")
-    if sha256(template) != baseline["artifacts"]["MANIFEST.json"]["sha256"]:
-        raise SystemExit("FAIL: baseline manifest template mismatch")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(template, output)
-    print("MANIFEST_BUILD_MODE=BASELINE_PASS_THROUGH")
-    print("MAKE_MANIFEST=PASS")
-    raise SystemExit(0)
-
-manifest = json.loads(template.read_text(encoding="utf-8"))
-manifest["schemaVersion"] = 1
-manifest["revision"] = a.tag
-manifest["status"] = "PRODUCTION"
-manifest["importAllowed"] = True
-manifest["task"] = "HAPP-ROUTING-PRODUCTION-001"
-manifest["source"] = provenance
-manifest["routingPolicy"] = {
+routing_policy = {
     "sha256": sha256(policy_path),
     "geositeTotal": len(policy["geositeTopLevel"]),
     "proxySites": policy["proxySites"],
@@ -85,37 +80,61 @@ manifest["routingPolicy"] = {
     "domainStrategy": policy["domainStrategy"],
     "fakeDns": policy["fakeDns"],
 }
-manifest["artifacts"] = {name: meta(path) for name, path in required.items()}
-manifest["validation"] = {
-    "result": "PASS",
-    "geositeTotal": 31,
-    "proxySitesActive": 22,
-    "geositeReserve": 9,
-    "proxyIp": policy["proxyIp"],
-    "broadRuBlockedGeoipActive": False,
-    "xray": "PASS",
-    "sha256": "PASS",
-    "secretScan": "PASS",
-}
-manifest["safety"] = {
-    "offlinePlaceholderUrls": False,
-    "secretsInArtifacts": False,
-    "hostkeyChanged": False,
-    "aezaChanged": False,
-    "iphoneChanged": False,
-    "happClientChanged": False,
-    "autoPublish": False,
-}
-manifest["automation"] = {
-    "previousProductionRelease": a.previous_production,
-    "workflowRunId": str(a.workflow_run_id),
-    "inputFingerprint": a.input_fingerprint,
+
+manifest = {
+    "manifestSchema": 2,
+    "task": "HAPP-ROUTING-PRODUCTION-001",
+    "revision": a.tag,
+    "status": "PRODUCTION",
+    "importAllowed": True,
+    "buildPlan": {
+        "targetRelease": a.tag,
+        "previousProductionRelease": a.previous_production,
+        "routingLastUpdated": a.last_updated,
+        "inputFingerprint": a.input_fingerprint,
+    },
+    "source": provenance,
+    "toolchain": {
+        "sha256": sha256(toolchain_path),
+        "lock": toolchain,
+    },
+    "routingPolicy": routing_policy,
+    "artifacts": {name: meta(path) for name, path in required.items()},
+    "validationContract": {
+        "sha256": sha256(contract_path),
+        "geositeTotal": contract["geositeTotal"],
+        "proxySitesActive": contract["proxySitesActive"],
+        "geositeReserve": contract["geositeReserve"],
+        "proxyIpExact": contract["proxyIpExact"],
+        "broadRuBlockedGeoipActive": contract["broadRuBlockedGeoipActive"],
+    },
+    "validation": {
+        "result": "PASS",
+        "geositeTotal": contract["geositeTotal"],
+        "proxySitesActive": contract["proxySitesActive"],
+        "geositeReserve": contract["geositeReserve"],
+        "proxyIp": contract["proxyIpExact"],
+        "broadRuBlockedGeoipActive": False,
+        "xray": "PASS",
+        "sha256": "PASS",
+        "secretScan": "PASS",
+    },
+    "safety": {
+        "offlinePlaceholderUrls": False,
+        "secretsInArtifacts": False,
+        "hostkeyChanged": False,
+        "aezaChanged": False,
+        "iphoneChanged": False,
+        "happClientChanged": False,
+        "autoPublish": False,
+    },
 }
 
 output.parent.mkdir(parents=True, exist_ok=True)
 with output.open("w", encoding="utf-8", newline="\n") as f:
-    json.dump(manifest, f, ensure_ascii=False, indent=2)
+    json.dump(manifest, f, ensure_ascii=False, indent=2, sort_keys=True)
     f.write("\n")
 
-print("MANIFEST_BUILD_MODE=GENERATED")
+print("MANIFEST_SCHEMA=2")
+print("MANIFEST_BUILD_MODE=DETERMINISTIC_V2")
 print("MAKE_MANIFEST=PASS")

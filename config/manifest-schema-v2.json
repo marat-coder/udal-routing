@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "productionManifestSchema": 2,
+  "appliesAfterRelease": "2026.09.25.3",
+  "legacyManifest": {
+    "release": "2026.09.25.3",
+    "schema": 1,
+    "status": "KNOWN_RUNTIME_METADATA_NONDETERMINISM"
+  },
+  "forbiddenRuntimeFields": [
+    "workflowRunId",
+    "workflowRunURL",
+    "workflowTrigger",
+    "repositoryCommitSHA",
+    "actor",
+    "runnerId",
+    "runTimestamp",
+    "buildTimestamp",
+    "transientRunURL"
+  ]
+}

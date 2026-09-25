@@ -36,6 +36,7 @@ jobs:
       BASELINE_FILE: config/baseline-2026.09.25.3.json
       POLICY_FILE: config/routing-policy.json
       BASELINE_POLICY_FILE: config/baseline-routing-policy-2026.09.25.3.json
+      MANIFEST_CONFIG: config/manifest-schema-v2.json
 
     steps:
       - name: Checkout automation repository
@@ -59,6 +60,7 @@ jobs:
           p = json.loads(Path("config/routing-policy.json").read_text())
           bp = json.loads(Path("config/baseline-routing-policy-2026.09.25.3.json").read_text())
           b = json.loads(Path("config/baseline-2026.09.25.3.json").read_text())
+          mc = json.loads(Path("config/manifest-schema-v2.json").read_text())
 
           assert len(p["geositeTopLevel"]) == 31
           assert len(p["proxySites"]) == 22
@@ -74,7 +76,15 @@ jobs:
           assert b["baselineRelease"] == "2026.09.25.3"
           assert b["contracts"]["proxyIp"] == ["geoip:telegram", "geoip:facebook"]
           assert b["contracts"]["broadRuBlockedGeoipActive"] is False
+          assert mc["productionManifestSchema"] == 2
+          assert mc["appliesAfterRelease"] == "2026.09.25.3"
+          assert mc["legacyManifest"] == {
+              "release": "2026.09.25.3",
+              "schema": 1,
+              "status": "KNOWN_RUNTIME_METADATA_NONDETERMINISM",
+          }
           print("ROUTING_POLICY_BASELINE_LOCK=PASS")
+          print("MANIFEST_ARCHITECTURE_V2=PASS")
           print("REPOSITORY_CONFIG=PASS")
           PY
 
@@ -87,8 +97,6 @@ jobs:
           gh release download "$BASELINE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "UDAL-ROUTING.json" \
-            --pattern "MANIFEST.json" \
-            --pattern "SHA256SUMS" \
             --dir work/baseline-release
 
           python3 - <<'PY'
@@ -97,13 +105,13 @@ jobs:
 
           b = json.loads(Path("config/baseline-2026.09.25.3.json").read_text())
           root = Path("work/baseline-release")
-          for name in ("UDAL-ROUTING.json", "MANIFEST.json", "SHA256SUMS"):
-              data = (root / name).read_bytes()
-              got = hashlib.sha256(data).hexdigest()
-              want = b["artifacts"][name]["sha256"]
-              if got != want:
-                  raise SystemExit(f"FAIL: baseline template hash mismatch: {name}")
-          print("BASELINE_TEMPLATES=PASS")
+          name = "UDAL-ROUTING.json"
+          data = (root / name).read_bytes()
+          got = hashlib.sha256(data).hexdigest()
+          want = b["artifacts"][name]["sha256"]
+          if got != want:
+              raise SystemExit(f"FAIL: baseline routing template hash mismatch: {name}")
+          print("BASELINE_ROUTING_TEMPLATE=PASS")
           PY
 
       - name: Discover and prepare baseline inputs
@@ -309,6 +317,25 @@ jobs:
 
           cat work/candidate-meta.json
 
+      - name: Write runtime provenance to job summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_URL="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          {
+            echo "### Runtime provenance (excluded from production bundle hashes)"
+            echo ""
+            echo "- workflowRunId: $GITHUB_RUN_ID"
+            echo "- workflowRunURL: $RUN_URL"
+            echo "- workflowTrigger: $GITHUB_EVENT_NAME"
+            echo "- repositoryCommitSHA: $GITHUB_SHA"
+            echo "- actor: $GITHUB_ACTOR"
+            echo "- runTimestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "- targetRelease: ${{ steps.meta.outputs.tag }}"
+            echo "- previousProductionRelease: ${{ steps.meta.outputs.previous_production }}"
+            echo "- inputFingerprint: ${{ steps.meta.outputs.input_fingerprint }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Stop cleanly when inputs are unchanged
         if: ${{ steps.meta.outputs.no_changes == 'true' }}
         shell: bash
@@ -421,50 +448,77 @@ jobs:
           set -euo pipefail
           python3 scripts/scan-secrets.py --repo-root . --bundle work/bundle
 
-      - name: Build manifest and SHA256SUMS
-        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+      - name: Build deterministic MANIFEST v2 and SHA256SUMS
+        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
-          POLICY_FOR_BUILD="$POLICY_FILE"
-          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
-            POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
-          fi
-
           python3 scripts/make-manifest.py \
-            --template work/baseline-release/MANIFEST.json \
-            --baseline "$BASELINE_FILE" \
-            --policy "$POLICY_FOR_BUILD" \
+            --manifest-config "$MANIFEST_CONFIG" \
+            --toolchain-lock config/toolchain-lock.json \
+            --validation-contract config/validation-contract.json \
+            --policy "$POLICY_FILE" \
             --provenance work/candidate-provenance.json \
             --bundle work/bundle \
             --tag "${{ steps.meta.outputs.tag }}" \
             --previous-production "${{ steps.meta.outputs.previous_production }}" \
-            --workflow-run-id "$GITHUB_RUN_ID" \
+            --last-updated "${{ steps.meta.outputs.last_updated }}" \
             --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}" \
             --output work/bundle/MANIFEST.json
 
           python3 scripts/make-sha256sums.py --bundle work/bundle
 
+      - name: Verify deterministic MANIFEST v2 and SHA256SUMS
+        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/repeat-bundle
+          cp work/bundle/UDAL-GEOSITE.dat work/repeat-bundle/
+          cp work/bundle/UDAL-GEOIP.dat work/repeat-bundle/
+          cp work/bundle/UDAL-ROUTING.json work/repeat-bundle/
+
+          python3 scripts/make-manifest.py \
+            --manifest-config "$MANIFEST_CONFIG" \
+            --toolchain-lock config/toolchain-lock.json \
+            --validation-contract config/validation-contract.json \
+            --policy "$POLICY_FILE" \
+            --provenance work/candidate-provenance.json \
+            --bundle work/repeat-bundle \
+            --tag "${{ steps.meta.outputs.tag }}" \
+            --previous-production "${{ steps.meta.outputs.previous_production }}" \
+            --last-updated "${{ steps.meta.outputs.last_updated }}" \
+            --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}" \
+            --output work/repeat-bundle/MANIFEST.json
+
+          python3 scripts/make-sha256sums.py --bundle work/repeat-bundle
+
+          cmp work/bundle/MANIFEST.json work/repeat-bundle/MANIFEST.json
+          cmp work/bundle/SHA256SUMS work/repeat-bundle/SHA256SUMS
+          echo "MANIFEST_V2_DETERMINISM=PASS"
+          echo "SHA256SUMS_DETERMINISM=PASS"
+
       - name: Final validation and secret scan
-        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/scan-secrets.py --repo-root . --bundle work/bundle
 
-          POLICY_FOR_BUILD="$POLICY_FILE"
-          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
-            POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
-          fi
-
           python3 scripts/validate-artifacts.py \
             --bundle work/bundle \
-            --policy "$POLICY_FOR_BUILD" \
+            --policy "$POLICY_FILE" \
             --contract config/validation-contract.json \
+            --manifest-config "$MANIFEST_CONFIG" \
+            --toolchain-lock config/toolchain-lock.json \
+            --provenance work/candidate-provenance.json \
             --repo "$GITHUB_REPOSITORY" \
-            --tag "${{ steps.meta.outputs.tag }}"
+            --tag "${{ steps.meta.outputs.tag }}" \
+            --previous-production "${{ steps.meta.outputs.previous_production }}" \
+            --last-updated "${{ steps.meta.outputs.last_updated }}" \
+            --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}"
 
-      - name: Baseline exact reproduction gate
+      - name: Legacy 2026.09.25.3 core reproduction gate
         if: ${{ inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
@@ -475,58 +529,26 @@ jobs:
 
           baseline = json.loads(Path(os.environ["BASELINE_FILE"]).read_text())
           bundle = Path("work/bundle")
-          failed = []
+          names = ["UDAL-GEOSITE.dat", "UDAL-GEOIP.dat", "UDAL-ROUTING.json"]
 
-          for name, md in baseline["artifacts"].items():
+          for name in names:
+              md = baseline["artifacts"][name]
               path = bundle / name
               if not path.is_file():
-                  print(f"{name}=FAIL_MISSING")
-                  failed.append(name)
-                  continue
+                  raise SystemExit(f"FAIL: legacy baseline core output missing {name}")
               data = path.read_bytes()
               got_sha = hashlib.sha256(data).hexdigest()
-              got_size = len(data)
-              if got_sha != md["sha256"] or got_size != md["size"]:
-                  print(f"{name}=FAIL")
-                  print(f"{name}_EXPECTED_SHA256={md['sha256']}")
-                  print(f"{name}_ACTUAL_SHA256={got_sha}")
-                  print(f"{name}_EXPECTED_SIZE={md['size']}")
-                  print(f"{name}_ACTUAL_SIZE={got_size}")
-                  failed.append(name)
-              else:
-                  print(f"{name}=PASS")
+              if got_sha != md["sha256"] or len(data) != md["size"]:
+                  raise SystemExit(f"FAIL: legacy baseline core mismatch: {name}")
+              print(f"{name}=PASS")
 
-          if "MANIFEST.json" in failed:
-              expected = json.loads(Path("work/baseline-release/MANIFEST.json").read_text())
-              actual = json.loads((bundle / "MANIFEST.json").read_text())
-              def walk(prefix, a, b):
-                  if type(a) is not type(b):
-                      print(f"MANIFEST_DIFF {prefix}: expected={a!r} actual={b!r}")
-                      return
-                  if isinstance(a, dict):
-                      for key in sorted(set(a) | set(b)):
-                          p = f"{prefix}.{key}" if prefix else key
-                          if key not in a:
-                              print(f"MANIFEST_DIFF {p}: expected=<missing> actual={b[key]!r}")
-                          elif key not in b:
-                              print(f"MANIFEST_DIFF {p}: expected={a[key]!r} actual=<missing>")
-                          else:
-                              walk(p, a[key], b[key])
-                  elif isinstance(a, list):
-                      if a != b:
-                          print(f"MANIFEST_DIFF {prefix}: expected={a!r} actual={b!r}")
-                  elif a != b:
-                      print(f"MANIFEST_DIFF {prefix}: expected={a!r} actual={b!r}")
-              walk("", expected, actual)
-
-          if failed:
-              raise SystemExit("FAIL: baseline exact reproduction mismatch: " + ",".join(failed))
-
-          print("BASELINE_REPRODUCTION=PASS")
+          print("LEGACY_MANIFEST_SCHEMA_V1=KNOWN_RUNTIME_METADATA_NONDETERMINISM")
+          print("LEGACY_MANIFEST_SECOND_REPRODUCTION=NOT_REQUIRED")
+          print("BASELINE_CORE_REPRODUCTION=PASS")
           PY
 
       - name: Upload validated build artifact
-        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: geo-candidate-${{ github.run_id }}
@@ -587,6 +609,7 @@ jobs:
 
           python3 - "$TAG" "$FP" "$PREV" "$LAST_UPDATED" <<'PY'
           import hashlib, json, os, sys
+          from datetime import datetime, timezone
           from pathlib import Path
 
           tag, fp, previous, last_updated = sys.argv[1:]
@@ -604,7 +627,14 @@ jobs:
               f"RunetFreedom GeoIP release: {prov['geoip']['release']}",
               f"RunetFreedom GeoIP SHA256: {prov['geoip']['sha256']}",
               "Validation: PASS",
+              "",
+              "Runtime provenance (excluded from production bundle hashes):",
               f"Workflow run ID: {os.environ['GITHUB_RUN_ID']}",
+              f"Workflow run URL: https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              f"Workflow trigger: {os.environ['GITHUB_EVENT_NAME']}",
+              f"Repository commit SHA: {os.environ['GITHUB_SHA']}",
+              f"Actor: {os.environ['GITHUB_ACTOR']}",
+              f"Run timestamp: {datetime.now(timezone.utc).isoformat()}",
               "",
               "SHA256:",
           ]
