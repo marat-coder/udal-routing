@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "geositeTotal": 31,
+  "proxySitesActive": 22,
+  "geositeReserve": 9,
+  "geoipValidationCategories": [
+    "private",
+    "telegram",
+    "twitter",
+    "facebook",
+    "netflix",
+    "google",
+    "cloudflare",
+    "cloudfront",
+    "fastly",
+    "yandex",
+    "ddos-guard",
+    "ru-blocked",
+    "ru-blocked-community",
+    "re-filter",
+    "ru-whitelist"
+  ]
+}
