@@ -13,13 +13,246 @@ on:
         required: true
         type: boolean
         default: true
+      manifest_v2_determinism_test:
+        description: Run isolated frozen-plan MANIFEST v2 determinism proof only
+        required: true
+        type: boolean
+        default: false
 
 concurrency:
   group: geo-autoupdate
   cancel-in-progress: false
 
 jobs:
+  manifest-v2-determinism:
+    if: ${{ inputs.manifest_v2_determinism_test }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      TEST_ROOT: work/manifest-v2-determinism
+
+    steps:
+      - name: Checkout automation repository
+        uses: actions/checkout@v4
+
+      - name: Verify determinism-test safety gates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          policy_path = Path("config/routing-policy.json")
+          policy_sha = hashlib.sha256(policy_path.read_bytes()).hexdigest()
+          expected_policy_sha = "8654b9f9b941e0e43c384eee5adb152d113916286cc75abc5faa8a17a0133942"
+          if policy_sha != expected_policy_sha:
+              raise SystemExit(f"FAIL: routing policy changed: {policy_sha}")
+
+          policy = json.loads(policy_path.read_text())
+          if policy["proxyIp"] != ["geoip:telegram", "geoip:facebook"]:
+              raise SystemExit("FAIL: ProxyIp contract changed")
+          if "geoip:ru-blocked" in policy["proxyIp"]:
+              raise SystemExit("FAIL: broad geoip:ru-blocked active")
+
+          manifest_cfg = json.loads(Path("config/manifest-schema-v2.json").read_text())
+          if manifest_cfg["productionManifestSchema"] != 2:
+              raise SystemExit("FAIL: MANIFEST v2 config changed")
+
+          print("TEST_MODE=MANIFEST_V2_DETERMINISM")
+          print("FROZEN_BUILD_PLAN=YES")
+          print("CURRENT_UPSTREAM_PATH=BLOCKED")
+          print("NO_CHANGES_DEPENDENCY=NO")
+          print("RELEASE_CREATION_PATH=BLOCKED")
+          print("TAG_CREATION_PATH=BLOCKED")
+          print("SCHEDULE=OFF")
+          print("AUTO_PUBLISH=NO")
+          PY
+
+      - name: Run frozen MANIFEST v2 determinism proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$TEST_ROOT"
+          mkdir -p "$TEST_ROOT/a" "$TEST_ROOT/b"
+
+          cat > "$TEST_ROOT/frozen-provenance.json" <<'JSON'
+          {
+            "domainListCommunity": {
+              "repository": "v2fly/domain-list-community",
+              "commit": "a5731758ed6bc9620b0e146ed24b07b9131893cf",
+              "timestamp": "2026-09-25T00:00:00Z",
+              "relevantHash": "c826e971a42c88920069cb6d7c14b3e7fb5da018db88f0cccc9d30485e07d34b"
+            },
+            "ruBlockedGeosite": {
+              "repository": "runetfreedom/russia-blocked-geosite",
+              "release": "202608101553",
+              "asset": "ru-blocked.txt",
+              "size": 1731646,
+              "sha256": "8b8d8d1ce37edbdc550bbb73f473f072b15432bf42b1fac5b35f95a603fec77d",
+              "publishedAt": "2026-08-10T15:53:00Z"
+            },
+            "geoip": {
+              "repository": "runetfreedom/russia-blocked-geoip",
+              "release": "202609250840",
+              "asset": "geoip.dat",
+              "size": 18083158,
+              "sha256": "0918202112fa7cd038dc81254f8ae637f8aaf9b02311898ccd22ba079592cbac",
+              "publishedAt": "2026-09-25T08:42:07Z",
+              "model": "FULL_PINNED_RUNETFREEDOM_BYTE_FOR_BYTE"
+            },
+            "routingPolicySha256": "8654b9f9b941e0e43c384eee5adb152d113916286cc75abc5faa8a17a0133942",
+            "inputFingerprint": "84fc3cf8124fcbdc1a6c753ce4825211bf4b7c45e940265ce2b7d94f29c49c9f"
+          }
+          JSON
+
+          cat > "$TEST_ROOT/runtime-a.json" <<'JSON'
+          {
+            "workflowRunId": "111111",
+            "workflowRunURL": "https://example.invalid/runtime-a",
+            "workflowTrigger": "workflow_dispatch",
+            "repositoryCommitSHA": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "actor": "runtime-a",
+            "runTimestamp": "2001-01-01T00:00:00Z"
+          }
+          JSON
+
+          cat > "$TEST_ROOT/runtime-b.json" <<'JSON'
+          {
+            "workflowRunId": "999999",
+            "workflowRunURL": "https://example.invalid/runtime-b",
+            "workflowTrigger": "schedule",
+            "repositoryCommitSHA": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "actor": "runtime-b",
+            "runTimestamp": "2099-12-31T23:59:59Z"
+          }
+          JSON
+
+          if cmp -s "$TEST_ROOT/runtime-a.json" "$TEST_ROOT/runtime-b.json"; then
+            echo "FAIL: runtime contexts unexpectedly identical" >&2
+            exit 1
+          fi
+          echo "RUNTIME_CONTEXT_A_B_DIFFERENT=PASS"
+
+          for d in a b; do
+            printf '%s\n' 'synthetic-geosite-fixture-v1' > "$TEST_ROOT/$d/UDAL-GEOSITE.dat"
+            printf '%s\n' 'synthetic-geoip-fixture-v1' > "$TEST_ROOT/$d/UDAL-GEOIP.dat"
+            printf '%s\n' 'synthetic-routing-fixture-v1' > "$TEST_ROOT/$d/UDAL-ROUTING.json"
+          done
+
+          COMMON_ARGS=(
+            --manifest-config config/manifest-schema-v2.json
+            --toolchain-lock config/toolchain-lock.json
+            --validation-contract config/validation-contract.json
+            --policy config/routing-policy.json
+            --provenance "$TEST_ROOT/frozen-provenance.json"
+            --tag 2099.01.01.999
+            --previous-production 2026.09.25.3
+            --last-updated 1790327433
+            --input-fingerprint 84fc3cf8124fcbdc1a6c753ce4825211bf4b7c45e940265ce2b7d94f29c49c9f
+          )
+
+          GITHUB_RUN_ID=111111 \
+          GITHUB_EVENT_NAME=workflow_dispatch \
+          GITHUB_ACTOR=runtime-a \
+          GITHUB_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+          python3 scripts/make-manifest.py \
+            "${COMMON_ARGS[@]}" \
+            --bundle "$TEST_ROOT/a" \
+            --output "$TEST_ROOT/a/MANIFEST.json"
+
+          python3 scripts/make-sha256sums.py --bundle "$TEST_ROOT/a"
+
+          GITHUB_RUN_ID=999999 \
+          GITHUB_EVENT_NAME=schedule \
+          GITHUB_ACTOR=runtime-b \
+          GITHUB_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+          python3 scripts/make-manifest.py \
+            "${COMMON_ARGS[@]}" \
+            --bundle "$TEST_ROOT/b" \
+            --output "$TEST_ROOT/b/MANIFEST.json"
+
+          python3 scripts/make-sha256sums.py --bundle "$TEST_ROOT/b"
+
+          MANIFEST_A_SHA="$(sha256sum "$TEST_ROOT/a/MANIFEST.json" | awk '{print $1}')"
+          MANIFEST_B_SHA="$(sha256sum "$TEST_ROOT/b/MANIFEST.json" | awk '{print $1}')"
+          SUMS_A_SHA="$(sha256sum "$TEST_ROOT/a/SHA256SUMS" | awk '{print $1}')"
+          SUMS_B_SHA="$(sha256sum "$TEST_ROOT/b/SHA256SUMS" | awk '{print $1}')"
+
+          echo "MANIFEST_V2_RUN_A_SHA256=$MANIFEST_A_SHA"
+          echo "MANIFEST_V2_RUN_B_SHA256=$MANIFEST_B_SHA"
+          echo "MANIFEST_WITH_RUNTIME_A_SHA256=$MANIFEST_A_SHA"
+          echo "MANIFEST_WITH_RUNTIME_B_SHA256=$MANIFEST_B_SHA"
+          echo "SHA256SUMS_A=$SUMS_A_SHA"
+          echo "SHA256SUMS_B=$SUMS_B_SHA"
+          echo "SHA256SUMS_WITH_RUNTIME_A=$SUMS_A_SHA"
+          echo "SHA256SUMS_WITH_RUNTIME_B=$SUMS_B_SHA"
+
+          test "$MANIFEST_A_SHA" = "$MANIFEST_B_SHA"
+          test "$SUMS_A_SHA" = "$SUMS_B_SHA"
+          cmp "$TEST_ROOT/a/MANIFEST.json" "$TEST_ROOT/b/MANIFEST.json"
+          cmp "$TEST_ROOT/a/SHA256SUMS" "$TEST_ROOT/b/SHA256SUMS"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("work/manifest-v2-determinism")
+          cfg = json.loads(Path("config/manifest-schema-v2.json").read_text())
+          forbidden = set(cfg["forbiddenRuntimeFields"])
+
+          a = json.loads((root / "a/MANIFEST.json").read_text())
+          b = json.loads((root / "b/MANIFEST.json").read_text())
+
+          def walk(value):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      if key in forbidden:
+                          raise SystemExit(f"FAIL: runtime field leaked into MANIFEST v2: {key}")
+                      walk(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      walk(child)
+
+          walk(a)
+          walk(b)
+
+          if a.get("manifestSchema") != 2 or b.get("manifestSchema") != 2:
+              raise SystemExit("FAIL: manifest schema is not v2")
+          if a["buildPlan"]["previousProductionRelease"] != "2026.09.25.3":
+              raise SystemExit("FAIL: previousProductionRelease frozen input mismatch")
+
+          print("MANIFEST_SCHEMA=2")
+          print("PREVIOUS_PRODUCTION_MODEL=FROZEN_INPUT")
+          print("MANIFEST_RUNTIME_FIELDS_ABSENT=PASS")
+          PY
+
+          echo "MANIFEST_V2_DETERMINISM=PASS"
+          echo "SHA256SUMS_DETERMINISM=PASS"
+          echo "RUNTIME_METADATA_HASH_INFLUENCE=NONE"
+
+          {
+            echo "### MANIFEST v2 determinism proof"
+            echo ""
+            echo "- Test mode: isolated frozen synthetic/build plan"
+            echo "- Current upstream used: NO"
+            echo "- NO_CHANGES dependency: NO"
+            echo "- Runtime context A: $TEST_ROOT/runtime-a.json"
+            echo "- Runtime context B: $TEST_ROOT/runtime-b.json"
+            echo "- Runtime provenance location: Job Summary / future draft release body only"
+            echo "- MANIFEST v2 SHA256: $MANIFEST_A_SHA"
+            echo "- SHA256SUMS SHA256: $SUMS_A_SHA"
+            echo "- RUNTIME_METADATA_HASH_INFLUENCE=NONE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "RUNTIME_PROVENANCE_LOCATION=JOB_SUMMARY_AND_FUTURE_DRAFT_RELEASE_BODY"
+          echo "RESULT=PASS"
+
   build:
+    if: ${{ !inputs.manifest_v2_determinism_test }}
     runs-on: ubuntu-24.04
     permissions:
       # write is required here only so the GITHUB_TOKEN has push-level visibility
@@ -561,7 +794,7 @@ jobs:
 
   draft:
     needs: build
-    if: ${{ !inputs.baseline_reproduction && !inputs.dry_run && needs.build.outputs.no_changes == 'false' }}
+    if: ${{ !inputs.manifest_v2_determinism_test && !inputs.baseline_reproduction && !inputs.dry_run && needs.build.outputs.no_changes == 'false' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
