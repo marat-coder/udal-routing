@@ -91,7 +91,7 @@ manifest["validation"] = {
     "geositeTotal": 31,
     "proxySitesActive": 22,
     "geositeReserve": 9,
-    "proxyIp": ["geoip:telegram"],
+    "proxyIp": policy["proxyIp"],
     "broadRuBlockedGeoipActive": False,
     "xray": "PASS",
     "sha256": "PASS",

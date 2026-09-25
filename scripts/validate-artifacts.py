@@ -47,7 +47,7 @@ checks = {
     "DirectSites": policy["directSites"],
     "DirectIp": policy["directIp"],
     "ProxySites": policy["proxySites"],
-    "ProxyIp": ["geoip:telegram"],
+    "ProxyIp": policy["proxyIp"],
     "BlockSites": [],
     "BlockIp": [],
     "DomainStrategy": "IPIfNonMatch",

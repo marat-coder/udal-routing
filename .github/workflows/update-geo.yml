@@ -33,6 +33,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       BASELINE_FILE: config/baseline-2026.09.25.1.json
       POLICY_FILE: config/routing-policy.json
+      BASELINE_POLICY_FILE: config/baseline-routing-policy-2026.09.25.1.json
 
     steps:
       - name: Checkout automation repository
@@ -54,14 +55,26 @@ jobs:
           from pathlib import Path
 
           p = json.loads(Path("config/routing-policy.json").read_text())
+          bp = json.loads(Path("config/baseline-routing-policy-2026.09.25.1.json").read_text())
           b = json.loads(Path("config/baseline-2026.09.25.1.json").read_text())
 
           assert len(p["geositeTopLevel"]) == 31
           assert len(p["proxySites"]) == 22
           assert len(p["geositeReserve"]) == 9
-          assert p["proxyIp"] == ["geoip:telegram"]
+          assert p["proxyIp"] == ["geoip:telegram", "geoip:facebook"]
           assert "geoip:ru-blocked" not in p["proxyIp"]
+          assert "geosite:meta" not in p["proxySites"]
+          assert "meta" not in p["geositeTopLevel"]
+
+          assert bp["proxyIp"] == ["geoip:telegram"]
+          p_cmp = dict(p)
+          bp_cmp = dict(bp)
+          p_cmp.pop("proxyIp")
+          bp_cmp.pop("proxyIp")
+          assert p_cmp == bp_cmp
+
           assert b["baselineRelease"] == "2026.09.25.1"
+          print("ROUTING_POLICY_MINIMAL_DIFF=PASS")
           print("REPOSITORY_CONFIG=PASS")
           PY
 
@@ -131,7 +144,7 @@ jobs:
           git -C work/dlc-baseline checkout -q --detach FETCH_HEAD
 
           python3 scripts/prepare-geosite.py \
-            --policy "$POLICY_FILE" \
+            --policy "$BASELINE_POLICY_FILE" \
             --dlc-data work/dlc-baseline/data \
             --ru-blocked work/inputs/baseline-ru-blocked.txt \
             --output-data work/data-baseline \
@@ -359,12 +372,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          POLICY_FOR_BUILD="$POLICY_FILE"
+          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
+            POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
+          fi
+
           scripts/validate-geodata.sh \
             work/dlc-candidate \
             work/bundle/UDAL-GEOSITE.dat \
             work/bundle/UDAL-GEOIP.dat \
             work/xray/xray \
-            "$POLICY_FILE" \
+            "$POLICY_FOR_BUILD" \
             config/validation-contract.json \
             work/geodata-validation
 
@@ -373,13 +391,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          POLICY_FOR_BUILD="$POLICY_FILE"
+          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
+            POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
+          fi
+
           python3 scripts/build-routing.py \
             --template work/baseline-release/UDAL-ROUTING.json \
-            --policy "$POLICY_FILE" \
+            --policy "$POLICY_FOR_BUILD" \
             --repo "$GITHUB_REPOSITORY" \
             --tag "${{ steps.meta.outputs.tag }}" \
             --last-updated "${{ steps.meta.outputs.last_updated }}" \
             --output work/bundle/UDAL-ROUTING.json
+
+      - name: Verify minimal routing semantic diff
+        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate-routing-diff.py \
+            --baseline work/baseline-release/UDAL-ROUTING.json \
+            --candidate work/bundle/UDAL-ROUTING.json
 
       - name: Pre-manifest secret scan
         if: ${{ steps.meta.outputs.no_changes != 'true' }}
@@ -398,10 +430,15 @@ jobs:
             EXTRA+=(--baseline-pass-through)
           fi
 
+          POLICY_FOR_BUILD="$POLICY_FILE"
+          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
+            POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
+          fi
+
           python3 scripts/make-manifest.py \
             --template work/baseline-release/MANIFEST.json \
             --baseline "$BASELINE_FILE" \
-            --policy "$POLICY_FILE" \
+            --policy "$POLICY_FOR_BUILD" \
             --provenance work/candidate-provenance.json \
             --bundle work/bundle \
             --tag "${{ steps.meta.outputs.tag }}" \
@@ -420,9 +457,14 @@ jobs:
           set -euo pipefail
           python3 scripts/scan-secrets.py --repo-root . --bundle work/bundle
 
+          POLICY_FOR_BUILD="$POLICY_FILE"
+          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
+            POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
+          fi
+
           python3 scripts/validate-artifacts.py \
             --bundle work/bundle \
-            --policy "$POLICY_FILE" \
+            --policy "$POLICY_FOR_BUILD" \
             --repo "$GITHUB_REPOSITORY" \
             --tag "${{ steps.meta.outputs.tag }}"
 

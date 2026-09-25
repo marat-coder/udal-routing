@@ -50,8 +50,7 @@
     "geosite:ru-blocked"
   ],
   "proxyIp": [
-    "geoip:telegram",
-    "geoip:facebook"
+    "geoip:telegram"
   ],
   "blockSites": [],
   "blockIp": [],
