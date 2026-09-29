@@ -18,14 +18,88 @@ on:
         required: true
         type: boolean
         default: false
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/update-geo.yml'
+      - 'config/**'
+      - 'scripts/**'
+      - 'tests/**'
+  schedule:
+    # Feature-branch preparation only; active scheduling requires merge to default branch.
+    - cron: '17 */6 * * *'
 
 concurrency:
   group: geo-autoupdate
   cancel-in-progress: false
 
 jobs:
+  mode:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      run_mode: ${{ steps.normalize.outputs.run_mode }}
+      baseline_reproduction: ${{ steps.normalize.outputs.baseline_reproduction }}
+      dry_run: ${{ steps.normalize.outputs.dry_run }}
+      manifest_test: ${{ steps.normalize.outputs.manifest_test }}
+      auto_publish: ${{ steps.normalize.outputs.auto_publish }}
+      run_build: ${{ steps.normalize.outputs.run_build }}
+    steps:
+      - id: normalize
+        shell: bash
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline_reproduction }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_MANIFEST_TEST: ${{ inputs.manifest_v2_determinism_test }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              MODE=ci; BASE=false; DRY=true; MTEST=false; AUTO=false; BUILD=false ;;
+            schedule)
+              MODE=scheduled; BASE=false; DRY=false; MTEST=false; AUTO=true; BUILD=true ;;
+            workflow_dispatch)
+              BASE="${INPUT_BASELINE:-false}"
+              DRY="${INPUT_DRY_RUN:-true}"
+              MTEST="${INPUT_MANIFEST_TEST:-false}"
+              AUTO=false
+              if [[ "$MTEST" == "true" ]]; then MODE=manifest-test; BUILD=false
+              elif [[ "$BASE" == "true" ]]; then MODE=baseline; BUILD=true
+              else MODE=manual; BUILD=true
+              fi ;;
+            *)
+              echo "FAIL: unsupported event $GITHUB_EVENT_NAME" >&2; exit 1 ;;
+          esac
+          {
+            echo "run_mode=$MODE"
+            echo "baseline_reproduction=$BASE"
+            echo "dry_run=$DRY"
+            echo "manifest_test=$MTEST"
+            echo "auto_publish=$AUTO"
+            echo "run_build=$BUILD"
+          } >> "$GITHUB_OUTPUT"
+          echo "RUN_MODE=$MODE"
+
+  phase-b-tests:
+    needs: mode
+    if: ${{ needs.mode.outputs.run_mode == 'ci' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Phase B tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts tests
+          bash -n scripts/build-geosite.sh scripts/build-geoip.sh scripts/validate-geodata.sh
+          python3 -m unittest discover -s tests -v
+
   manifest-v2-determinism:
-    if: ${{ inputs.manifest_v2_determinism_test }}
+    needs: mode
+    if: ${{ needs.mode.outputs.manifest_test == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -252,7 +326,8 @@ jobs:
           echo "RESULT=PASS"
 
   build:
-    if: ${{ !inputs.manifest_v2_determinism_test }}
+    needs: mode
+    if: ${{ needs.mode.outputs.run_build == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       # write is required here only so the GITHUB_TOKEN has push-level visibility
@@ -270,6 +345,7 @@ jobs:
       POLICY_FILE: config/routing-policy.json
       BASELINE_POLICY_FILE: config/baseline-routing-policy-2026.09.25.3.json
       MANIFEST_CONFIG: config/manifest-schema-v2.json
+      BUILD_CONTRACT: config/build-contract.json
 
     steps:
       - name: Checkout automation repository
