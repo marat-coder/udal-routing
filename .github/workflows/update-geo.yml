@@ -1008,7 +1008,7 @@ jobs:
               "",
               f"INPUT_FINGERPRINT={fp}",
               f"ROUTING_LAST_UPDATED={last_updated}",
-              "AUTO_PUBLISH=NO",
+              "AUTO_PUBLISH_POLICY=SCHEDULE_UPSTREAM_ONLY",
           ])
           Path("work/release-notes.txt").write_text("\n".join(lines) + "\n")
           payload = {
