@@ -520,6 +520,43 @@ jobs:
           ln -s "$PWD/work/datprofile-baseline.json" work/datprofile-candidate.json
           ln -s "$PWD/work/inputs/baseline-geoip.dat" work/geoip-candidate.dat
 
+      - name: Inspect current published production
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/current-production
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > work/current-production/release.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("work/current-production/release.json").read_text())
+          assets={a.get("name"):a for a in r.get("assets",[])}
+          for name in ("MANIFEST.json","UDAL-ROUTING.json"):
+              a=assets.get(name)
+              if not a or not isinstance(a.get("id"),int):
+                  raise SystemExit(f"FAIL: current production asset missing: {name}")
+              Path(f"work/current-production/{name}.asset-id").write_text(str(a["id"]))
+          PY
+
+          MANIFEST_ID="$(cat work/current-production/MANIFEST.json.asset-id)"
+          ROUTING_ID="$(cat work/current-production/UDAL-ROUTING.json.asset-id)"
+          gh api "repos/$GITHUB_REPOSITORY/releases/assets/$MANIFEST_ID" \
+            -H "Accept: application/octet-stream" > work/current-production/MANIFEST.json
+          gh api "repos/$GITHUB_REPOSITORY/releases/assets/$ROUTING_ID" \
+            -H "Accept: application/octet-stream" > work/current-production/UDAL-ROUTING.json
+
+          python3 scripts/inspect-current-production.py \
+            --release-json work/current-production/release.json \
+            --manifest work/current-production/MANIFEST.json \
+            --routing work/current-production/UDAL-ROUTING.json \
+            --baseline "$BASELINE_FILE" \
+            --build-contract "$BUILD_CONTRACT" \
+            --output work/current-production.json
+
       - name: Discover and prepare current upstream
         if: ${{ needs.mode.outputs.baseline_reproduction != 'true' }}
         env:
