@@ -837,6 +837,7 @@ jobs:
           cp work/bundle/UDAL-GEOSITE.dat work/repeat-bundle/
           cp work/bundle/UDAL-GEOIP.dat work/repeat-bundle/
           cp work/bundle/UDAL-ROUTING.json work/repeat-bundle/
+          cp work/bundle/UDAL-ROUTING-LIVE.json work/repeat-bundle/
 
           python3 scripts/make-manifest.py \
             --manifest-config "$MANIFEST_CONFIG" \
