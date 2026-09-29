@@ -826,7 +826,7 @@ jobs:
             --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}" \
             --output work/bundle/MANIFEST.json
 
-          python3 scripts/make-sha256sums.py --bundle work/bundle
+          python3 scripts/make-sha256sums.py --bundle work/bundle --build-contract config/build-contract.json
 
       - name: Verify deterministic MANIFEST v2 and SHA256SUMS
         if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
