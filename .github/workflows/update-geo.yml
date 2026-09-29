@@ -923,8 +923,8 @@ jobs:
           retention-days: 7
 
   draft:
-    needs: build
-    if: ${{ !inputs.manifest_v2_determinism_test && !inputs.baseline_reproduction && !inputs.dry_run && needs.build.outputs.no_changes == 'false' }}
+    needs: [mode, build]
+    if: ${{ needs.mode.outputs.manifest_test != 'true' && needs.mode.outputs.baseline_reproduction != 'true' && needs.mode.outputs.dry_run != 'true' && needs.build.outputs.no_changes == 'false' && needs.build.outputs.stale_draft != 'true' && (needs.mode.outputs.run_mode == 'manual' || needs.build.outputs.schedule_eligible == 'true') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -942,7 +942,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(find work/bundle -maxdepth 1 -type f | wc -l | tr -d ' ')" = "5"
+          test "$(find work/bundle -maxdepth 1 -type f | wc -l | tr -d ' ')" = "6"
           (
             cd work/bundle
             sha256sum -c SHA256SUMS
