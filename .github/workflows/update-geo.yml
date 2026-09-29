@@ -89,6 +89,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Run Phase B tests
         shell: bash
         run: |
@@ -96,6 +98,80 @@ jobs:
           python3 -m compileall -q scripts tests
           bash -n scripts/build-geosite.sh scripts/build-geoip.sh scripts/validate-geodata.sh scripts/publish-validated-draft.sh
           python3 -m unittest discover -s tests -v
+
+  phase-b-geodata-smoke:
+    needs: mode
+    if: ${{ needs.mode.outputs.run_mode == 'ci' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout automation repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.12'
+          cache: false
+
+      - name: Fetch immutable geodata validation fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/ci-geodata work/ci-dlc work/ci-xray
+          BASE_TAG="$(python3 -c 'import json; print(json.load(open("config/baseline-2026.09.25.3.json"))["baselineRelease"])')"
+          DLC_SHA="$(python3 -c 'import json; print(json.load(open("config/toolchain-lock.json"))["domainListCommunityGenerator"]["baselineCommit"])')"
+          XRAY_VERSION="$(python3 -c 'import json; print(json.load(open("config/toolchain-lock.json"))["xray"]["version"])')"
+          XRAY_ASSET="$(python3 -c 'import json; print(json.load(open("config/toolchain-lock.json"))["xray"]["linuxAmd64Asset"])')"
+
+          curl -fL --retry 3 -o work/ci-geodata/UDAL-GEOSITE.dat \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$BASE_TAG/UDAL-GEOSITE.dat"
+          curl -fL --retry 3 -o work/ci-geodata/UDAL-GEOIP.dat \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$BASE_TAG/UDAL-GEOIP.dat"
+          curl -fL --retry 3 -o work/ci-xray/xray.zip \
+            "https://github.com/XTLS/Xray-core/releases/download/v$XRAY_VERSION/$XRAY_ASSET"
+
+          python3 - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          b=json.loads(Path("config/baseline-2026.09.25.3.json").read_text())
+          t=json.loads(Path("config/toolchain-lock.json").read_text())
+          pairs=[
+              (Path("work/ci-geodata/UDAL-GEOSITE.dat"),b["artifacts"]["UDAL-GEOSITE.dat"]["sha256"]),
+              (Path("work/ci-geodata/UDAL-GEOIP.dat"),b["artifacts"]["UDAL-GEOIP.dat"]["sha256"]),
+              (Path("work/ci-xray/xray.zip"),t["xray"]["linuxAmd64Sha256"]),
+          ]
+          for path,want in pairs:
+              got=hashlib.sha256(path.read_bytes()).hexdigest()
+              if got!=want:
+                  raise SystemExit(f"FAIL: CI fixture hash mismatch: {path.name}")
+          print("CI_FIXTURE_HASHES=PASS")
+          PY
+
+          git -C work/ci-dlc init -q
+          git -C work/ci-dlc remote add origin https://github.com/v2fly/domain-list-community.git
+          git -C work/ci-dlc fetch -q --depth=1 origin "$DLC_SHA"
+          git -C work/ci-dlc checkout -q --detach FETCH_HEAD
+          unzip -q work/ci-xray/xray.zip -d work/ci-xray/unpacked
+          chmod +x work/ci-xray/unpacked/xray
+
+      - name: Run read-only geodata and Xray validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${GH_TOKEN:-}"
+          test -z "${GITHUB_TOKEN:-}"
+          scripts/validate-geodata.sh \
+            work/ci-dlc \
+            work/ci-geodata/UDAL-GEOSITE.dat \
+            work/ci-geodata/UDAL-GEOIP.dat \
+            work/ci-xray/unpacked/xray \
+            config/baseline-routing-policy-2026.09.25.3.json \
+            config/validation-contract.json \
+            work/ci-geodata-validation
 
   manifest-v2-determinism:
     needs: mode
