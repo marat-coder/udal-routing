@@ -814,6 +814,7 @@ jobs:
           set -euo pipefail
           python3 scripts/make-manifest.py \
             --manifest-config "$MANIFEST_CONFIG" \
+            --build-contract config/build-contract.json \
             --toolchain-lock config/toolchain-lock.json \
             --validation-contract config/validation-contract.json \
             --policy "$POLICY_FILE" \
