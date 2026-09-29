@@ -1118,7 +1118,9 @@ jobs:
             --release-json work/remote-release.json \
             --bundle work/bundle \
             --remote-dir work/remote-download \
-            --build-contract config/build-contract.json
+            --build-contract config/build-contract.json \
+            --expected-rid "$RID" \
+            --expected-tag "$TAG"
 
           printf '%s\n' "$RID" > work/release-id.txt
           trap - ERR
