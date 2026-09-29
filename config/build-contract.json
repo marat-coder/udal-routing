@@ -1,4 +1,82 @@
 {
   "schemaVersion": 1,
-  "contractId": "dual-routing-six-asset-v1"
+  "contractId": "dual-routing-six-asset-v1",
+  "artifactSetVersion": 2,
+  "repository": "marat-coder/udal-routing",
+  "artifactSet": [
+    "UDAL-GEOSITE.dat",
+    "UDAL-GEOIP.dat",
+    "UDAL-ROUTING.json",
+    "UDAL-ROUTING-LIVE.json",
+    "MANIFEST.json",
+    "SHA256SUMS"
+  ],
+  "preManifestArtifacts": [
+    "UDAL-GEOSITE.dat",
+    "UDAL-GEOIP.dat",
+    "UDAL-ROUTING.json",
+    "UDAL-ROUTING-LIVE.json"
+  ],
+  "sha256SumsOrder": [
+    "UDAL-GEOSITE.dat",
+    "UDAL-GEOIP.dat",
+    "UDAL-ROUTING.json",
+    "UDAL-ROUTING-LIVE.json",
+    "MANIFEST.json"
+  ],
+  "urlModel": {
+    "id": "snapshot-pinned-plus-live-latest-v1",
+    "snapshot": {
+      "artifact": "UDAL-ROUTING.json",
+      "mode": "version-pinned"
+    },
+    "live": {
+      "artifact": "UDAL-ROUTING-LIVE.json",
+      "mode": "latest-release",
+      "geoipUrl": "https://github.com/marat-coder/udal-routing/releases/latest/download/UDAL-GEOIP.dat",
+      "geositeUrl": "https://github.com/marat-coder/udal-routing/releases/latest/download/UDAL-GEOSITE.dat"
+    }
+  },
+  "changePolicy": {
+    "scheduledAutoPublishEligibleReasons": [
+      "V2FLY_RELEVANT",
+      "RU_BLOCKED_CONTENT",
+      "GEOIP_CONTENT"
+    ],
+    "scheduledAutoPublishBlockedReasons": [
+      "ROUTING_POLICY",
+      "BUILD_CONTRACT",
+      "URL_MODEL"
+    ]
+  },
+  "releasePolicy": {
+    "scheduleCron": "17 */6 * * *",
+    "manualDispatchAutoPublish": false,
+    "scheduledAutoPublish": true,
+    "requiresValidatedDraft": true,
+    "preserveVersionedReleases": true
+  },
+  "legacyAssetSetTags": {
+    "2026.09.25.1": [
+      "UDAL-GEOSITE.dat",
+      "UDAL-GEOIP.dat",
+      "UDAL-ROUTING.json",
+      "MANIFEST.json",
+      "SHA256SUMS"
+    ],
+    "2026.09.25.2": [
+      "UDAL-GEOSITE.dat",
+      "UDAL-GEOIP.dat",
+      "UDAL-ROUTING.json",
+      "MANIFEST.json",
+      "SHA256SUMS"
+    ],
+    "2026.09.25.3": [
+      "UDAL-GEOSITE.dat",
+      "UDAL-GEOIP.dat",
+      "UDAL-ROUTING.json",
+      "MANIFEST.json",
+      "SHA256SUMS"
+    ]
+  }
 }
