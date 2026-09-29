@@ -94,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m compileall -q scripts tests
-          bash -n scripts/build-geosite.sh scripts/build-geoip.sh scripts/validate-geodata.sh
+          bash -n scripts/build-geosite.sh scripts/build-geoip.sh scripts/validate-geodata.sh scripts/publish-validated-draft.sh
           python3 -m unittest discover -s tests -v
 
   manifest-v2-determinism:
