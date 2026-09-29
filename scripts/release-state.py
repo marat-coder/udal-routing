@@ -3,17 +3,8 @@ import argparse
 import json
 import re
 import subprocess
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-
-EXPECTED_ASSETS = {
-    "UDAL-GEOSITE.dat",
-    "UDAL-GEOIP.dat",
-    "UDAL-ROUTING.json",
-    "MANIFEST.json",
-    "SHA256SUMS",
-}
 
 
 def gh(path, allow_404=False):
@@ -27,11 +18,7 @@ def gh(path, allow_404=False):
 
 def download_asset(repo, asset_id):
     p = subprocess.run(
-        [
-            "gh", "api",
-            f"repos/{repo}/releases/assets/{asset_id}",
-            "-H", "Accept: application/octet-stream",
-        ],
+        ["gh", "api", f"repos/{repo}/releases/assets/{asset_id}", "-H", "Accept: application/octet-stream"],
         capture_output=True,
     )
     if p.returncode != 0:
@@ -49,102 +36,132 @@ def manifest_fingerprint(data):
         obj = json.loads(data.decode("utf-8"))
     except Exception:
         raise SystemExit("FAIL: cannot parse MANIFEST.json for fingerprint contract")
-
     if obj.get("manifestSchema") == 2:
         fp = obj.get("buildPlan", {}).get("inputFingerprint")
     else:
         fp = obj.get("automation", {}).get("inputFingerprint")
-
     if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-f]{64}", fp):
         raise SystemExit("FAIL: MANIFEST.json lacks valid input fingerprint")
     return fp
 
 
 def release_manifest_fingerprint(repo, assets):
-    manifest_assets = [x for x in assets if x["name"] == "MANIFEST.json"]
-    if len(manifest_assets) != 1:
-        raise SystemExit("FAIL: baseline release must contain exactly one MANIFEST.json")
-    return manifest_fingerprint(download_asset(repo, manifest_assets[0]["id"]))
+    hits = [x for x in assets if x["name"] == "MANIFEST.json"]
+    if len(hits) != 1:
+        raise SystemExit("FAIL: release must contain exactly one MANIFEST.json")
+    return manifest_fingerprint(download_asset(repo, hits[0]["id"]))
 
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--repo", required=True)
-    p.add_argument("--baseline", required=True)
-    p.add_argument("--baseline-fingerprint", required=True)
-    p.add_argument("--current-fingerprint", required=True)
-    p.add_argument("--output", required=True)
-    a = p.parse_args()
+def expected_assets(tag, contract):
+    legacy = contract.get("legacyAssetSetTags", {})
+    return set(legacy[tag] if tag in legacy else contract["artifactSet"])
 
-    baseline = json.loads(Path(a.baseline).read_text(encoding="utf-8"))
+
+def analyze_releases(releases, baseline, contract, baseline_fp, current_fp, manifest_resolver, routing_resolver=None):
     baseline_tag = baseline["baselineRelease"]
     max_last = int(baseline["routingLastUpdated"])
-
     fp_contract = baseline.get("fingerprintContract", {})
-    locked_baseline_fp = fp_contract.get("baselineInputFingerprint")
-    legacy_optional = fp_contract.get("legacyFingerprintOptionalTags", [])
-
-    if locked_baseline_fp != a.baseline_fingerprint:
+    if fp_contract.get("baselineInputFingerprint") != baseline_fp:
         raise SystemExit("FAIL: computed baseline fingerprint does not match baseline lock")
+    legacy_optional = fp_contract.get("legacyFingerprintOptionalTags", [])
     if not isinstance(legacy_optional, list) or len(legacy_optional) != len(set(legacy_optional)):
         raise SystemExit("FAIL: invalid legacy fingerprint allowlist")
     if baseline_tag in legacy_optional:
         raise SystemExit("FAIL: current baseline cannot be fingerprint-exempt")
-    for tag in legacy_optional:
-        if not isinstance(tag, str) or not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\.\d+", tag):
-            raise SystemExit("FAIL: invalid tag in legacy fingerprint allowlist")
-
     legacy_optional = set(legacy_optional)
 
-    releases = gh(f"repos/{a.repo}/releases?per_page=100")
     published = [r for r in releases if not r.get("draft") and r.get("published_at")]
     published.sort(key=lambda r: r["published_at"], reverse=True)
     previous_production = published[0]["tag_name"] if published else baseline_tag
 
-    existing_fingerprints = set()
+    published_fps = set()
+    draft_fp_tags = {}
     version_re = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.\d+$")
 
     for r in releases:
         tag = r.get("tag_name", "")
         if not version_re.fullmatch(tag):
             continue
-
         assets = r.get("assets", [])
         names = {x["name"] for x in assets}
-        if tag != baseline_tag and names != EXPECTED_ASSETS:
-            raise SystemExit(f"FAIL: incomplete versioned release/draft exists: {tag}")
+        if names != expected_assets(tag, contract):
+            raise SystemExit(f"FAIL: versioned release/draft asset set mismatch: {tag}")
 
-        body_fp = body_fingerprint(r.get("body") or "")
+        fp = body_fingerprint(r.get("body") or "")
+        is_published = not r.get("draft") and bool(r.get("published_at"))
 
         if tag == baseline_tag:
-            baseline_release_fp = body_fp or release_manifest_fingerprint(a.repo, assets)
-            if baseline_release_fp != a.baseline_fingerprint:
+            fp = fp or manifest_resolver(r)
+            if fp != baseline_fp or not is_published:
                 raise SystemExit("FAIL: current production fingerprint contract mismatch")
-            existing_fingerprints.add(baseline_release_fp)
+            published_fps.add(fp)
             print(f"CURRENT_PRODUCTION_FINGERPRINT_CONTRACT=ENFORCED:{tag}")
-        elif body_fp:
-            existing_fingerprints.add(body_fp)
+        elif fp:
+            if r.get("draft"):
+                draft_fp_tags.setdefault(fp, []).append(tag)
+            elif is_published:
+                published_fps.add(fp)
+            else:
+                raise SystemExit(f"FAIL: invalid versioned release state: {tag}")
         elif tag in legacy_optional:
             if r.get("draft") or not r.get("published_at") or r.get("immutable") is not True:
                 raise SystemExit(f"FAIL: legacy fingerprint exemption requires published immutable release: {tag}")
             print(f"LEGACY_FINGERPRINT_ALLOWLIST_ACCEPTED={tag}")
-        elif names == EXPECTED_ASSETS:
-            raise SystemExit(f"FAIL: versioned candidate lacks fingerprint marker: {tag}")
+        else:
+            raise SystemExit(f"FAIL: versioned release lacks fingerprint marker: {tag}")
 
-        route_assets = [x for x in assets if x["name"] == "UDAL-ROUTING.json"]
-        if len(route_assets) == 1:
-            try:
-                obj = json.loads(download_asset(a.repo, route_assets[0]["id"]).decode("utf-8"))
-            except Exception:
-                raise SystemExit(f"FAIL: cannot parse routing asset in release {tag}")
-            lu = obj.get("LastUpdated")
-            if not isinstance(lu, int):
-                raise SystemExit(f"FAIL: invalid LastUpdated in release {tag}")
-            max_last = max(max_last, lu)
+        if routing_resolver:
+            data = routing_resolver(r)
+            if data is not None:
+                obj = json.loads(data.decode("utf-8"))
+                lu = obj.get("LastUpdated")
+                if not isinstance(lu, int):
+                    raise SystemExit(f"FAIL: invalid LastUpdated in release {tag}")
+                max_last = max(max_last, lu)
 
-    no_changes = (
-        a.current_fingerprint == a.baseline_fingerprint
-        or a.current_fingerprint in existing_fingerprints
+    draft_tags = sorted(draft_fp_tags.get(current_fp, []))
+    if len(draft_tags) > 1:
+        raise SystemExit("FAIL: multiple matching drafts exist for current fingerprint")
+
+    baseline_match = current_fp == baseline_fp
+    published_match = baseline_match or current_fp in published_fps
+    stale_draft = bool(draft_tags) and not published_match
+
+    return {
+        "previousProductionRelease": previous_production,
+        "maxLastUpdated": max_last,
+        "nextLastUpdatedFloor": max_last + 1,
+        "noChanges": published_match,
+        "publishedFingerprintMatch": published_match,
+        "draftFingerprintMatch": bool(draft_tags),
+        "staleDraftMatch": stale_draft,
+        "matchingDraftTag": draft_tags[0] if draft_tags else None,
+        "baselineFingerprintMatch": baseline_match,
+    }
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--repo", required=True)
+    p.add_argument("--baseline", required=True)
+    p.add_argument("--build-contract", required=True)
+    p.add_argument("--baseline-fingerprint", required=True)
+    p.add_argument("--current-fingerprint", required=True)
+    p.add_argument("--output", required=True)
+    a = p.parse_args()
+
+    baseline = json.loads(Path(a.baseline).read_text(encoding="utf-8"))
+    contract = json.loads(Path(a.build_contract).read_text(encoding="utf-8"))
+    releases = gh(f"repos/{a.repo}/releases?per_page=100")
+
+    def routing_resolver(r):
+        hits = [x for x in r.get("assets", []) if x["name"] == "UDAL-ROUTING.json"]
+        return download_asset(a.repo, hits[0]["id"]) if len(hits) == 1 else None
+
+    state = analyze_releases(
+        releases, baseline, contract, a.baseline_fingerprint, a.current_fingerprint,
+        lambda r: release_manifest_fingerprint(a.repo, r.get("assets", [])),
+        routing_resolver,
     )
 
     prefix = datetime.now(timezone.utc).strftime("%Y.%m.%d.")
@@ -154,27 +171,20 @@ def main():
         name = ref.get("ref", "")
         if name.startswith("refs/tags/"):
             used.add(name[len("refs/tags/"):])
-
     n = 1
     while f"{prefix}{n}" in used:
         n += 1
-    new_tag = f"{prefix}{n}"
+    state["newTag"] = f"{prefix}{n}"
 
-    out = {
-        "previousProductionRelease": previous_production,
-        "maxLastUpdated": max_last,
-        "nextLastUpdatedFloor": max_last + 1,
-        "newTag": new_tag,
-        "noChanges": no_changes,
-        "existingFingerprintMatch": a.current_fingerprint in existing_fingerprints,
-        "baselineFingerprintMatch": a.current_fingerprint == a.baseline_fingerprint,
-    }
-    Path(a.output).write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
-
-    print(f"PREVIOUS_PRODUCTION={previous_production}")
-    print(f"MAX_LAST_UPDATED={max_last}")
-    print(f"NEW_TAG={new_tag}")
-    print(f"NO_CHANGES={str(no_changes).lower()}")
+    Path(a.output).write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    for k in ("previousProductionRelease","maxLastUpdated","newTag"):
+        print(f"{k.upper()}={state[k]}")
+    print(f"NO_CHANGES={str(state['noChanges']).lower()}")
+    print(f"PUBLISHED_FINGERPRINT_MATCH={str(state['publishedFingerprintMatch']).lower()}")
+    print(f"DRAFT_FINGERPRINT_MATCH={str(state['draftFingerprintMatch']).lower()}")
+    print(f"STALE_DRAFT_MATCH={str(state['staleDraftMatch']).lower()}")
+    if state["matchingDraftTag"]:
+        print(f"MATCHING_DRAFT_TAG={state['matchingDraftTag']}")
     print("RELEASE_STATE=PASS")
 
 
