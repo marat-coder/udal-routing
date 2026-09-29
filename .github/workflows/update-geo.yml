@@ -1071,6 +1071,20 @@ jobs:
             --remote-dir work/remote-download \
             --build-contract config/build-contract.json
 
+          printf '%s\n' "$RID" > work/release-id.txt
           trap - ERR
           echo "DRAFT_TAG=$TAG"
-          echo "DRAFT_PUBLISHED=NO"
+          echo "DRAFT_REMOTE_VALIDATION=PASS"
+
+      - name: Publish exact validated draft on scheduled upstream-only change
+        if: ${{ needs.mode.outputs.auto_publish == 'true' && needs.build.outputs.schedule_eligible == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/publish-validated-draft.sh \
+            "$GITHUB_REPOSITORY" \
+            "${{ needs.build.outputs.tag }}" \
+            "$(cat work/release-id.txt)" \
+            work/bundle \
+            config/build-contract.json \
+            work/post-publish
