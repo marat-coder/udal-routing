@@ -1001,7 +1001,7 @@ jobs:
               "",
               "SHA256:",
           ]
-          for name in ["UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","MANIFEST.json","SHA256SUMS"]:
+          for name in ["UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","UDAL-ROUTING-LIVE.json","MANIFEST.json","SHA256SUMS"]:
               h = hashlib.sha256((bundle / name).read_bytes()).hexdigest()
               lines.append(f"{h}  {name}")
           lines.extend([
