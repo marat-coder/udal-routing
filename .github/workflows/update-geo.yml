@@ -332,9 +332,7 @@ jobs:
     if: ${{ needs.mode.outputs.run_build == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
-      # write is required here only so the GITHUB_TOKEN has push-level visibility
-      # of existing draft releases when calculating the next collision-free tag.
-      contents: write
+      contents: read
     outputs:
       no_changes: ${{ steps.meta.outputs.no_changes }}
       tag: ${{ steps.meta.outputs.tag }}
@@ -345,7 +343,6 @@ jobs:
       schedule_eligible: ${{ steps.meta.outputs.schedule_eligible }}
       change_reasons: ${{ steps.meta.outputs.change_reasons }}
     env:
-      GH_TOKEN: ${{ github.token }}
       BASELINE_FILE: config/baseline-2026.09.25.3.json
       POLICY_FILE: config/routing-policy.json
       BASELINE_POLICY_FILE: config/baseline-routing-policy-2026.09.25.3.json
@@ -355,6 +352,8 @@ jobs:
     steps:
       - name: Checkout automation repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up pinned Go
         uses: actions/setup-go@v5
