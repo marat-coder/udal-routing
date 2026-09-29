@@ -179,6 +179,22 @@ class PhaseBTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             release_state.analyze_releases(releases,baseline,self.contract,basefp,FP,lambda r:basefp)
 
+    def test_published_fingerprint_match_is_no_changes(self):
+        six=[{"name":n,"id":i+1} for i,n in enumerate(self.contract["artifactSet"])]
+        baseline={
+          "baselineRelease":"2099.01.01.1",
+          "routingLastUpdated":1800000000,
+          "fingerprintContract":{"baselineInputFingerprint":FP,"legacyFingerprintOptionalTags":[]}
+        }
+        releases=[{
+          "tag_name":"2099.01.01.1","draft":False,"published_at":"2099-01-01T00:00:00Z",
+          "immutable":True,"body":f"INPUT_FINGERPRINT={FP}","assets":six
+        }]
+        state=release_state.analyze_releases(releases,baseline,self.contract,FP,FP,lambda r:FP)
+        self.assertTrue(state["noChanges"])
+        self.assertTrue(state["publishedFingerprintMatch"])
+        self.assertFalse(state["staleDraftMatch"])
+
     def test_post_publish_and_latest_verifier(self):
         with tempfile.TemporaryDirectory() as td:
             bundle,_=self.make_bundle(td); latest=Path(td)/"latest"; latest.mkdir()
