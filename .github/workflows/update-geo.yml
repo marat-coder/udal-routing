@@ -872,6 +872,7 @@ jobs:
             --policy "$POLICY_FILE" \
             --contract config/validation-contract.json \
             --manifest-config "$MANIFEST_CONFIG" \
+            --build-contract "$BUILD_CONTRACT" \\
             --toolchain-lock config/toolchain-lock.json \
             --provenance work/candidate-provenance.json \
             --repo "$GITHUB_REPOSITORY" \
