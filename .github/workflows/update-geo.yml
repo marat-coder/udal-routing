@@ -46,6 +46,11 @@ jobs:
       auto_publish: ${{ steps.normalize.outputs.auto_publish }}
       run_build: ${{ steps.normalize.outputs.run_build }}
     steps:
+      - name: Checkout mode normalizer
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - id: normalize
         shell: bash
         env:
@@ -54,32 +59,12 @@ jobs:
           INPUT_MANIFEST_TEST: ${{ inputs.manifest_v2_determinism_test }}
         run: |
           set -euo pipefail
-          case "$GITHUB_EVENT_NAME" in
-            pull_request)
-              MODE=ci; BASE=false; DRY=true; MTEST=false; AUTO=false; BUILD=false ;;
-            schedule)
-              MODE=scheduled; BASE=false; DRY=false; MTEST=false; AUTO=true; BUILD=true ;;
-            workflow_dispatch)
-              BASE="${INPUT_BASELINE:-false}"
-              DRY="${INPUT_DRY_RUN:-true}"
-              MTEST="${INPUT_MANIFEST_TEST:-false}"
-              AUTO=false
-              if [[ "$MTEST" == "true" ]]; then MODE=manifest-test; BUILD=false
-              elif [[ "$BASE" == "true" ]]; then MODE=baseline; BUILD=true
-              else MODE=manual; BUILD=true
-              fi ;;
-            *)
-              echo "FAIL: unsupported event $GITHUB_EVENT_NAME" >&2; exit 1 ;;
-          esac
-          {
-            echo "run_mode=$MODE"
-            echo "baseline_reproduction=$BASE"
-            echo "dry_run=$DRY"
-            echo "manifest_test=$MTEST"
-            echo "auto_publish=$AUTO"
-            echo "run_build=$BUILD"
-          } >> "$GITHUB_OUTPUT"
-          echo "RUN_MODE=$MODE"
+          python3 scripts/normalize-run-mode.py \
+            --event "$GITHUB_EVENT_NAME" \
+            --baseline "${INPUT_BASELINE:-}" \
+            --dry-run "${INPUT_DRY_RUN:-}" \
+            --manifest-test "${INPUT_MANIFEST_TEST:-}" \
+            --github-output "$GITHUB_OUTPUT"
 
   phase-b-tests:
     needs: mode
