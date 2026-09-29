@@ -76,7 +76,29 @@ if m.get("buildPlan")!={"targetRelease":a.tag,"previousProductionRelease":a.prev
 if m.get("source")!=prov: raise SystemExit("FAIL: manifest source")
 expected_bc={"sha256":sha256(bc_path),"contractId":bc["contractId"],"artifactSetVersion":bc["artifactSetVersion"],"urlModelId":bc["urlModel"]["id"]}
 if m.get("buildContract")!=expected_bc: raise SystemExit("FAIL: manifest build contract")
+expected_routing_artifacts={
+    "snapshot":{"file":bc["urlModel"]["snapshot"]["artifact"],"urlMode":bc["urlModel"]["snapshot"]["mode"]},
+    "live":{"file":bc["urlModel"]["live"]["artifact"],"urlMode":bc["urlModel"]["live"]["mode"]}
+}
+if m.get("routingArtifacts")!=expected_routing_artifacts: raise SystemExit("FAIL: manifest routing artifacts")
+expected_toolchain={"sha256":sha256(tc_path),"lock":tc}
+if m.get("toolchain")!=expected_toolchain: raise SystemExit("FAIL: manifest toolchain lock")
+expected_policy={
+    "sha256":sha256(policy_path),"geositeTotal":len(policy["geositeTopLevel"]),
+    "proxySites":policy["proxySites"],"geositeReserve":policy["geositeReserve"],"proxyIp":policy["proxyIp"],
+    "directIp":policy["directIp"],"blockSites":policy["blockSites"],"blockIp":policy["blockIp"],
+    "globalProxy":policy["globalProxy"],"routeOrder":policy["routeOrder"],"useChunkFiles":policy["useChunkFiles"],
+    "domainStrategy":policy["domainStrategy"],"fakeDns":policy["fakeDns"]
+}
+if m.get("routingPolicy")!=expected_policy: raise SystemExit("FAIL: manifest routing policy")
+expected_validation_contract={
+    "sha256":sha256(vc_path),"geositeTotal":vc["geositeTotal"],"proxySitesActive":vc["proxySitesActive"],
+    "geositeReserve":vc["geositeReserve"],"proxyIpExact":vc["proxyIpExact"],
+    "broadRuBlockedGeoipActive":vc["broadRuBlockedGeoipActive"]
+}
+if m.get("validationContract")!=expected_validation_contract: raise SystemExit("FAIL: manifest validation contract")
 if m.get("releasePolicy")!=bc["releasePolicy"]: raise SystemExit("FAIL: manifest release policy")
+if m.get("safety",{}).get("offlinePlaceholderUrls") is not False: raise SystemExit("FAIL: manifest placeholder safety")
 if m.get("validation",{}).get("routingSemanticEquivalence")!="PASS": raise SystemExit("FAIL: manifest routing equivalence marker")
 for name in bc["preManifestArtifacts"]:
     md=m.get("artifacts",{}).get(name,{})
