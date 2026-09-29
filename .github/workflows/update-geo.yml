@@ -761,7 +761,7 @@ jobs:
             config/validation-contract.json \
             work/geodata-validation
 
-      - name: Build version-pinned routing
+      - name: Build snapshot and live routing
         if: ${{ steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
@@ -776,8 +776,20 @@ jobs:
             --policy "$POLICY_FOR_BUILD" \
             --repo "$GITHUB_REPOSITORY" \
             --tag "${{ steps.meta.outputs.tag }}" \
+            --url-mode snapshot \
             --last-updated "${{ steps.meta.outputs.last_updated }}" \
             --output work/bundle/UDAL-ROUTING.json
+
+          if [[ "${{ needs.mode.outputs.baseline_reproduction }}" != "true" ]]; then
+            python3 scripts/build-routing.py \
+              --template work/baseline-release/UDAL-ROUTING.json \
+              --policy "$POLICY_FOR_BUILD" \
+              --repo "$GITHUB_REPOSITORY" \
+              --tag "${{ steps.meta.outputs.tag }}" \
+              --url-mode live \
+              --last-updated "${{ steps.meta.outputs.last_updated }}" \
+              --output work/bundle/UDAL-ROUTING-LIVE.json
+          fi
 
       - name: Verify minimal routing semantic diff
         if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
