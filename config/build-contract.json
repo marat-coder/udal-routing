@@ -46,7 +46,8 @@
     "scheduledAutoPublishBlockedReasons": [
       "ROUTING_POLICY",
       "BUILD_CONTRACT",
-      "URL_MODEL"
+      "URL_MODEL",
+      "FINGERPRINT_SCHEMA"
     ]
   },
   "releasePolicy": {
@@ -83,6 +84,7 @@
     "release": "2026.09.25.3",
     "relevantHash": "c826e971a42c88920069cb6d7c14b3e7fb5da018db88f0cccc9d30485e07d34b",
     "buildContractId": "legacy-single-routing-five-asset-v1",
-    "urlModelId": "snapshot-version-pinned-only-v1"
+    "urlModelId": "snapshot-version-pinned-only-v1",
+    "fingerprintSchema": 1
   }
 }
