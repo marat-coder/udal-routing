@@ -1035,6 +1035,7 @@ jobs:
             work/bundle/UDAL-GEOSITE.dat \
             work/bundle/UDAL-GEOIP.dat \
             work/bundle/UDAL-ROUTING.json \
+            work/bundle/UDAL-ROUTING-LIVE.json \
             work/bundle/MANIFEST.json \
             work/bundle/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY"
