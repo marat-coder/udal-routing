@@ -215,10 +215,12 @@ jobs:
             printf '%s\n' 'synthetic-geosite-fixture-v1' > "$TEST_ROOT/$d/UDAL-GEOSITE.dat"
             printf '%s\n' 'synthetic-geoip-fixture-v1' > "$TEST_ROOT/$d/UDAL-GEOIP.dat"
             printf '%s\n' 'synthetic-routing-fixture-v1' > "$TEST_ROOT/$d/UDAL-ROUTING.json"
+            printf '%s\n' 'synthetic-routing-live-fixture-v1' > "$TEST_ROOT/$d/UDAL-ROUTING-LIVE.json"
           done
 
           COMMON_ARGS=(
             --manifest-config config/manifest-schema-v2.json
+            --build-contract config/build-contract.json
             --toolchain-lock config/toolchain-lock.json
             --validation-contract config/validation-contract.json
             --policy config/routing-policy.json
@@ -238,7 +240,7 @@ jobs:
             --bundle "$TEST_ROOT/a" \
             --output "$TEST_ROOT/a/MANIFEST.json"
 
-          python3 scripts/make-sha256sums.py --bundle "$TEST_ROOT/a"
+          python3 scripts/make-sha256sums.py --bundle "$TEST_ROOT/a" --build-contract config/build-contract.json
 
           GITHUB_RUN_ID=999999 \
           GITHUB_EVENT_NAME=schedule \
@@ -249,7 +251,7 @@ jobs:
             --bundle "$TEST_ROOT/b" \
             --output "$TEST_ROOT/b/MANIFEST.json"
 
-          python3 scripts/make-sha256sums.py --bundle "$TEST_ROOT/b"
+          python3 scripts/make-sha256sums.py --bundle "$TEST_ROOT/b" --build-contract config/build-contract.json
 
           MANIFEST_A_SHA="$(sha256sum "$TEST_ROOT/a/MANIFEST.json" | awk '{print $1}')"
           MANIFEST_B_SHA="$(sha256sum "$TEST_ROOT/b/MANIFEST.json" | awk '{print $1}')"
@@ -480,10 +482,11 @@ jobs:
             --provenance work/provenance-baseline-discovered.json \
             --relevant-hash "$RELEVANT_HASH" \
             --policy-sha "$POLICY_SHA" \
+            --fingerprint-schema legacy-v1 \
             --output work/provenance-baseline.json
 
       - name: Prepare baseline reproduction mode
-        if: ${{ inputs.baseline_reproduction }}
+        if: ${{ needs.mode.outputs.baseline_reproduction == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -512,7 +515,7 @@ jobs:
           ln -s "$PWD/work/inputs/baseline-geoip.dat" work/geoip-candidate.dat
 
       - name: Discover and prepare current upstream
-        if: ${{ !inputs.baseline_reproduction }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -564,7 +567,15 @@ jobs:
             --provenance work/provenance-current-discovered.json \
             --relevant-hash "$RELEVANT_HASH" \
             --policy "$POLICY_FILE" \
+            --fingerprint-schema v2 \
+            --build-contract "$BUILD_CONTRACT" \
             --output work/provenance-current.json
+
+          python3 scripts/classify-change.py \
+            --baseline "$BASELINE_FILE" \
+            --provenance work/provenance-current.json \
+            --build-contract "$BUILD_CONTRACT" \
+            --output work/change-reasons.json
 
           BASE_FP="$(python3 -c 'import json; print(json.load(open("work/provenance-baseline.json"))["inputFingerprint"])')"
           CUR_FP="$(python3 -c 'import json; print(json.load(open("work/provenance-current.json"))["inputFingerprint"])')"
@@ -572,6 +583,7 @@ jobs:
           python3 scripts/release-state.py \
             --repo "$GITHUB_REPOSITORY" \
             --baseline "$BASELINE_FILE" \
+            --build-contract "$BUILD_CONTRACT" \
             --baseline-fingerprint "$BASE_FP" \
             --current-fingerprint "$CUR_FP" \
             --output work/release-state.json
@@ -710,7 +722,7 @@ jobs:
         run: |
           set -euo pipefail
           POLICY_FOR_BUILD="$POLICY_FILE"
-          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
+          if [[ "${{ needs.mode.outputs.baseline_reproduction }}" == "true" ]]; then
             POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
           fi
 
@@ -729,7 +741,7 @@ jobs:
         run: |
           set -euo pipefail
           POLICY_FOR_BUILD="$POLICY_FILE"
-          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
+          if [[ "${{ needs.mode.outputs.baseline_reproduction }}" == "true" ]]; then
             POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
           fi
 
