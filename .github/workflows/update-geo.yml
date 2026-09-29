@@ -792,7 +792,7 @@ jobs:
           fi
 
       - name: Verify minimal routing semantic diff
-        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -808,7 +808,7 @@ jobs:
           python3 scripts/scan-secrets.py --repo-root . --bundle work/bundle
 
       - name: Build deterministic MANIFEST v2 and SHA256SUMS
-        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -828,7 +828,7 @@ jobs:
           python3 scripts/make-sha256sums.py --bundle work/bundle
 
       - name: Verify deterministic MANIFEST v2 and SHA256SUMS
-        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -858,7 +858,7 @@ jobs:
           echo "SHA256SUMS_DETERMINISM=PASS"
 
       - name: Final validation and secret scan
-        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -878,7 +878,7 @@ jobs:
             --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}"
 
       - name: Legacy 2026.09.25.3 core reproduction gate
-        if: ${{ inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction == 'true' && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -907,7 +907,7 @@ jobs:
           PY
 
       - name: Upload validated build artifact
-        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: geo-candidate-${{ github.run_id }}
