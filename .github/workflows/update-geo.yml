@@ -1065,22 +1065,11 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --dir work/remote-download
 
-          python3 - <<'PY'
-          import hashlib
-          from pathlib import Path
-
-          local = Path("work/bundle")
-          remote = Path("work/remote-download")
-          expected = sorted(["UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","MANIFEST.json","SHA256SUMS"])
-          if sorted(x.name for x in remote.iterdir() if x.is_file()) != expected:
-              raise SystemExit("FAIL: downloaded draft asset set")
-          for name in expected:
-              a = hashlib.sha256((local / name).read_bytes()).hexdigest()
-              b = hashlib.sha256((remote / name).read_bytes()).hexdigest()
-              if a != b:
-                  raise SystemExit(f"FAIL: downloaded draft mismatch {name}")
-          print("REMOTE_DRAFT_DOWNLOAD=PASS")
-          PY
+          python3 scripts/verify-draft-release.py \
+            --release-json work/remote-release.json \
+            --bundle work/bundle \
+            --remote-dir work/remote-download \
+            --build-contract config/build-contract.json
 
           trap - ERR
           echo "DRAFT_TAG=$TAG"
