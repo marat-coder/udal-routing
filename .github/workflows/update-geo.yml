@@ -741,7 +741,7 @@ jobs:
             work/bundle \
             "$GEOIP_SHA"
 
-      - name: Install and verify pinned Xray
+      - name: Download pinned Xray
         if: ${{ steps.meta.outputs.no_changes != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -767,6 +767,11 @@ jobs:
             -H "Accept: application/octet-stream" > work/xray.zip
           test "$(sha256sum work/xray.zip | awk '{print $1}')" = "$XRAY_SHA"
 
+      - name: Verify pinned Xray executable
+        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p work/xray
           unzip -q work/xray.zip -d work/xray
           chmod +x work/xray/xray
