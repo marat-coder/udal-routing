@@ -853,7 +853,7 @@ jobs:
             --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}" \
             --output work/repeat-bundle/MANIFEST.json
 
-          python3 scripts/make-sha256sums.py --bundle work/repeat-bundle
+          python3 scripts/make-sha256sums.py --bundle work/repeat-bundle --build-contract config/build-contract.json
 
           cmp work/bundle/MANIFEST.json work/repeat-bundle/MANIFEST.json
           cmp work/bundle/SHA256SUMS work/repeat-bundle/SHA256SUMS
