@@ -954,7 +954,7 @@ jobs:
 
   draft:
     needs: [mode, build]
-    if: ${{ needs.mode.outputs.manifest_test != 'true' && needs.mode.outputs.baseline_reproduction != 'true' && needs.mode.outputs.dry_run != 'true' && needs.build.outputs.no_changes == 'false' && needs.build.outputs.stale_draft != 'true' && (needs.mode.outputs.run_mode == 'manual' || needs.build.outputs.schedule_eligible == 'true') }}
+    if: ${{ needs.mode.outputs.manifest_test != 'true' && needs.mode.outputs.baseline_reproduction != 'true' && needs.mode.outputs.dry_run != 'true' && needs.build.outputs.no_changes == 'false' && (needs.mode.outputs.run_mode == 'manual' || needs.build.outputs.schedule_eligible == 'true') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -977,6 +977,25 @@ jobs:
             cd work/bundle
             sha256sum -c SHA256SUMS
           )
+
+      - name: Fail closed on stale draft or tag collision
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.build.outputs.tag }}"
+          FP="${{ needs.build.outputs.input_fingerprint }}"
+
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > work/releases-before-mutation.json
+          python3 scripts/check-mutation-state.py \
+            --releases-json work/releases-before-mutation.json \
+            --planned-tag "$TAG" \
+            --fingerprint "$FP" \
+            --output work/mutation-state.json
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "FAIL: planned tag already exists: $TAG" >&2
+            exit 1
+          fi
 
       - name: Create and verify draft release
         shell: bash
