@@ -341,6 +341,9 @@ jobs:
       input_fingerprint: ${{ steps.meta.outputs.input_fingerprint }}
       previous_production: ${{ steps.meta.outputs.previous_production }}
       last_updated: ${{ steps.meta.outputs.last_updated }}
+      stale_draft: ${{ steps.meta.outputs.stale_draft }}
+      schedule_eligible: ${{ steps.meta.outputs.schedule_eligible }}
+      change_reasons: ${{ steps.meta.outputs.change_reasons }}
     env:
       GH_TOKEN: ${{ github.token }}
       BASELINE_FILE: config/baseline-2026.09.25.3.json
@@ -595,6 +598,7 @@ jobs:
 
           prov = json.loads(Path("work/provenance-current.json").read_text())
           state = json.loads(Path("work/release-state.json").read_text())
+          changes = json.loads(Path("work/change-reasons.json").read_text())
 
           timestamps = [
               prov["domainListCommunity"]["timestamp"],
@@ -607,6 +611,10 @@ jobs:
           meta = {
               "mode": "current",
               "noChanges": bool(state["noChanges"]),
+              "staleDraftMatch": bool(state["staleDraftMatch"]),
+              "matchingDraftTag": state["matchingDraftTag"],
+              "scheduleAutoPublishEligible": bool(changes["scheduledAutoPublishEligible"]),
+              "changeReasons": changes["changeReasons"],
               "tag": state["newTag"],
               "lastUpdated": last_updated,
               "previousProduction": state["previousProductionRelease"],
@@ -634,6 +642,9 @@ jobs:
           print("input_fingerprint=" + m["inputFingerprint"])
           print("previous_production=" + m["previousProduction"])
           print("last_updated=" + str(m["lastUpdated"]))
+          print("stale_draft=" + str(m.get("staleDraftMatch", False)).lower())
+          print("schedule_eligible=" + str(m.get("scheduleAutoPublishEligible", False)).lower())
+          print("change_reasons=" + ",".join(m.get("changeReasons", [])))
           PY
 
           cat work/candidate-meta.json
@@ -656,6 +667,21 @@ jobs:
             echo "- previousProductionRelease: ${{ steps.meta.outputs.previous_production }}"
             echo "- inputFingerprint: ${{ steps.meta.outputs.input_fingerprint }}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop recoverably on stale matching draft
+        if: ${{ steps.meta.outputs.stale_draft == 'true' }}
+        shell: bash
+        run: |
+          echo "RESULT=STALE_DRAFT_REVALIDATION_REQUIRED" >&2
+          exit 1
+
+      - name: Block scheduled publish for non-upstream-only changes
+        if: ${{ needs.mode.outputs.run_mode == 'scheduled' && steps.meta.outputs.no_changes != 'true' && steps.meta.outputs.schedule_eligible != 'true' }}
+        shell: bash
+        run: |
+          echo "RESULT=MANUAL_REVIEW_REQUIRED"
+          echo "CHANGE_REASONS=${{ steps.meta.outputs.change_reasons }}"
+          exit 1
 
       - name: Stop cleanly when inputs are unchanged
         if: ${{ steps.meta.outputs.no_changes == 'true' }}
