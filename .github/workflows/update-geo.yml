@@ -339,7 +339,6 @@ jobs:
       input_fingerprint: ${{ steps.meta.outputs.input_fingerprint }}
       previous_production: ${{ steps.meta.outputs.previous_production }}
       last_updated: ${{ steps.meta.outputs.last_updated }}
-      stale_draft: ${{ steps.meta.outputs.stale_draft }}
       schedule_eligible: ${{ steps.meta.outputs.schedule_eligible }}
       change_reasons: ${{ steps.meta.outputs.change_reasons }}
     env:
@@ -617,20 +616,17 @@ jobs:
             --output work/provenance-current.json
 
           python3 scripts/classify-change.py \
-            --baseline "$BASELINE_FILE" \
+            --current-production work/current-production.json \
             --provenance work/provenance-current.json \
             --build-contract "$BUILD_CONTRACT" \
             --output work/change-reasons.json
 
-          BASE_FP="$(python3 -c 'import json; print(json.load(open("work/provenance-baseline.json"))["inputFingerprint"])')"
           CUR_FP="$(python3 -c 'import json; print(json.load(open("work/provenance-current.json"))["inputFingerprint"])')"
 
           python3 scripts/release-state.py \
-            --repo "$GITHUB_REPOSITORY" \
-            --baseline "$BASELINE_FILE" \
-            --build-contract "$BUILD_CONTRACT" \
-            --baseline-fingerprint "$BASE_FP" \
+            --current-production work/current-production.json \
             --current-fingerprint "$CUR_FP" \
+            --run-number "$GITHUB_RUN_NUMBER" \
             --output work/release-state.json
 
           python3 - <<'PY'
@@ -653,8 +649,6 @@ jobs:
           meta = {
               "mode": "current",
               "noChanges": bool(state["noChanges"]),
-              "staleDraftMatch": bool(state["staleDraftMatch"]),
-              "matchingDraftTag": state["matchingDraftTag"],
               "scheduleAutoPublishEligible": bool(changes["scheduledAutoPublishEligible"]),
               "changeReasons": changes["changeReasons"],
               "tag": state["newTag"],
@@ -684,7 +678,6 @@ jobs:
           print("input_fingerprint=" + m["inputFingerprint"])
           print("previous_production=" + m["previousProduction"])
           print("last_updated=" + str(m["lastUpdated"]))
-          print("stale_draft=" + str(m.get("staleDraftMatch", False)).lower())
           print("schedule_eligible=" + str(m.get("scheduleAutoPublishEligible", False)).lower())
           print("change_reasons=" + ",".join(m.get("changeReasons", [])))
           PY
@@ -709,13 +702,6 @@ jobs:
             echo "- previousProductionRelease: ${{ steps.meta.outputs.previous_production }}"
             echo "- inputFingerprint: ${{ steps.meta.outputs.input_fingerprint }}"
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Stop recoverably on stale matching draft
-        if: ${{ steps.meta.outputs.stale_draft == 'true' }}
-        shell: bash
-        run: |
-          echo "RESULT=STALE_DRAFT_REVALIDATION_REQUIRED" >&2
-          exit 1
 
       - name: Block scheduled publish for non-upstream-only changes
         if: ${{ needs.mode.outputs.run_mode == 'scheduled' && steps.meta.outputs.no_changes != 'true' && steps.meta.outputs.schedule_eligible != 'true' }}
