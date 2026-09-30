@@ -18,14 +18,149 @@ on:
         required: true
         type: boolean
         default: false
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/update-geo.yml'
+      - 'config/**'
+      - 'scripts/**'
+      - 'tests/**'
+  schedule:
+    # Feature-branch preparation only; active scheduling requires merge to default branch.
+    - cron: '17 */6 * * *'
 
 concurrency:
   group: geo-autoupdate
   cancel-in-progress: false
 
 jobs:
+  mode:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      run_mode: ${{ steps.normalize.outputs.run_mode }}
+      baseline_reproduction: ${{ steps.normalize.outputs.baseline_reproduction }}
+      dry_run: ${{ steps.normalize.outputs.dry_run }}
+      manifest_test: ${{ steps.normalize.outputs.manifest_test }}
+      auto_publish: ${{ steps.normalize.outputs.auto_publish }}
+      run_build: ${{ steps.normalize.outputs.run_build }}
+    steps:
+      - name: Checkout mode normalizer
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - id: normalize
+        shell: bash
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline_reproduction }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_MANIFEST_TEST: ${{ inputs.manifest_v2_determinism_test }}
+        run: |
+          set -euo pipefail
+          python3 scripts/normalize-run-mode.py \
+            --event "$GITHUB_EVENT_NAME" \
+            --baseline "${INPUT_BASELINE:-}" \
+            --dry-run "${INPUT_DRY_RUN:-}" \
+            --manifest-test "${INPUT_MANIFEST_TEST:-}" \
+            --github-output "$GITHUB_OUTPUT"
+
+  phase-b-tests:
+    needs: mode
+    if: ${{ needs.mode.outputs.run_mode == 'ci' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run Phase B tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts tests
+          bash -n scripts/build-geosite.sh scripts/build-geoip.sh scripts/validate-geodata.sh scripts/publish-validated-draft.sh
+          python3 -m unittest discover -s tests -v
+
+  phase-b-geodata-smoke:
+    needs: mode
+    if: ${{ needs.mode.outputs.run_mode == 'ci' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout automation repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.12'
+          cache: false
+
+      - name: Fetch immutable geodata validation fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/ci-geodata work/ci-dlc work/ci-xray
+          BASE_TAG="$(python3 -c 'import json; print(json.load(open("config/baseline-2026.09.25.3.json"))["baselineRelease"])')"
+          DLC_SHA="$(python3 -c 'import json; print(json.load(open("config/toolchain-lock.json"))["domainListCommunityGenerator"]["baselineCommit"])')"
+          XRAY_VERSION="$(python3 -c 'import json; print(json.load(open("config/toolchain-lock.json"))["xray"]["version"])')"
+          XRAY_ASSET="$(python3 -c 'import json; print(json.load(open("config/toolchain-lock.json"))["xray"]["linuxAmd64Asset"])')"
+
+          curl -fL --retry 3 -o work/ci-geodata/UDAL-GEOSITE.dat \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$BASE_TAG/UDAL-GEOSITE.dat"
+          curl -fL --retry 3 -o work/ci-geodata/UDAL-GEOIP.dat \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$BASE_TAG/UDAL-GEOIP.dat"
+          curl -fL --retry 3 -o work/ci-xray/xray.zip \
+            "https://github.com/XTLS/Xray-core/releases/download/v$XRAY_VERSION/$XRAY_ASSET"
+
+          python3 - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          b=json.loads(Path("config/baseline-2026.09.25.3.json").read_text())
+          t=json.loads(Path("config/toolchain-lock.json").read_text())
+          pairs=[
+              (Path("work/ci-geodata/UDAL-GEOSITE.dat"),b["artifacts"]["UDAL-GEOSITE.dat"]["sha256"]),
+              (Path("work/ci-geodata/UDAL-GEOIP.dat"),b["artifacts"]["UDAL-GEOIP.dat"]["sha256"]),
+              (Path("work/ci-xray/xray.zip"),t["xray"]["linuxAmd64Sha256"]),
+          ]
+          for path,want in pairs:
+              got=hashlib.sha256(path.read_bytes()).hexdigest()
+              if got!=want:
+                  raise SystemExit(f"FAIL: CI fixture hash mismatch: {path.name}")
+          print("CI_FIXTURE_HASHES=PASS")
+          PY
+
+          git -C work/ci-dlc init -q
+          git -C work/ci-dlc remote add origin https://github.com/v2fly/domain-list-community.git
+          git -C work/ci-dlc fetch -q --depth=1 origin "$DLC_SHA"
+          git -C work/ci-dlc checkout -q --detach FETCH_HEAD
+          unzip -q work/ci-xray/xray.zip -d work/ci-xray/unpacked
+          chmod +x work/ci-xray/unpacked/xray
+
+      - name: Run read-only geodata and Xray validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${GH_TOKEN:-}"
+          test -z "${GITHUB_TOKEN:-}"
+          scripts/validate-geodata.sh \
+            work/ci-dlc \
+            work/ci-geodata/UDAL-GEOSITE.dat \
+            work/ci-geodata/UDAL-GEOIP.dat \
+            work/ci-xray/unpacked/xray \
+            config/baseline-routing-policy-2026.09.25.3.json \
+            config/validation-contract.json \
+            work/ci-geodata-validation
+
   manifest-v2-determinism:
-    if: ${{ inputs.manifest_v2_determinism_test }}
+    needs: mode
+    if: ${{ needs.mode.outputs.manifest_test == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -79,13 +214,12 @@ jobs:
           rm -rf "$TEST_ROOT"
           mkdir -p "$TEST_ROOT/a" "$TEST_ROOT/b"
 
-          cat > "$TEST_ROOT/frozen-provenance.json" <<'JSON'
+          cat > "$TEST_ROOT/frozen-provenance-raw.json" <<'JSON'
           {
             "domainListCommunity": {
               "repository": "v2fly/domain-list-community",
               "commit": "a5731758ed6bc9620b0e146ed24b07b9131893cf",
-              "timestamp": "2026-09-25T00:00:00Z",
-              "relevantHash": "c826e971a42c88920069cb6d7c14b3e7fb5da018db88f0cccc9d30485e07d34b"
+              "timestamp": "2026-09-25T00:00:00Z"
             },
             "ruBlockedGeosite": {
               "repository": "runetfreedom/russia-blocked-geosite",
@@ -103,11 +237,19 @@ jobs:
               "sha256": "0918202112fa7cd038dc81254f8ae637f8aaf9b02311898ccd22ba079592cbac",
               "publishedAt": "2026-09-25T08:42:07Z",
               "model": "FULL_PINNED_RUNETFREEDOM_BYTE_FOR_BYTE"
-            },
-            "routingPolicySha256": "8654b9f9b941e0e43c384eee5adb152d113916286cc75abc5faa8a17a0133942",
-            "inputFingerprint": "84fc3cf8124fcbdc1a6c753ce4825211bf4b7c45e940265ce2b7d94f29c49c9f"
+            }
           }
           JSON
+
+          python3 scripts/make-fingerprint.py \
+            --provenance "$TEST_ROOT/frozen-provenance-raw.json" \
+            --relevant-hash c826e971a42c88920069cb6d7c14b3e7fb5da018db88f0cccc9d30485e07d34b \
+            --policy config/routing-policy.json \
+            --fingerprint-schema v2 \
+            --build-contract config/build-contract.json \
+            --output "$TEST_ROOT/frozen-provenance.json"
+
+          FROZEN_FP="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["inputFingerprint"])' "$TEST_ROOT/frozen-provenance.json")"
 
           cat > "$TEST_ROOT/runtime-a.json" <<'JSON'
           {
@@ -141,10 +283,12 @@ jobs:
             printf '%s\n' 'synthetic-geosite-fixture-v1' > "$TEST_ROOT/$d/UDAL-GEOSITE.dat"
             printf '%s\n' 'synthetic-geoip-fixture-v1' > "$TEST_ROOT/$d/UDAL-GEOIP.dat"
             printf '%s\n' 'synthetic-routing-fixture-v1' > "$TEST_ROOT/$d/UDAL-ROUTING.json"
+            printf '%s\n' 'synthetic-routing-live-fixture-v1' > "$TEST_ROOT/$d/UDAL-ROUTING-LIVE.json"
           done
 
           COMMON_ARGS=(
             --manifest-config config/manifest-schema-v2.json
+            --build-contract config/build-contract.json
             --toolchain-lock config/toolchain-lock.json
             --validation-contract config/validation-contract.json
             --policy config/routing-policy.json
@@ -152,7 +296,7 @@ jobs:
             --tag 2099.01.01.999
             --previous-production 2026.09.25.3
             --last-updated 1790327433
-            --input-fingerprint 84fc3cf8124fcbdc1a6c753ce4825211bf4b7c45e940265ce2b7d94f29c49c9f
+            --input-fingerprint "$FROZEN_FP"
           )
 
           GITHUB_RUN_ID=111111 \
@@ -164,7 +308,7 @@ jobs:
             --bundle "$TEST_ROOT/a" \
             --output "$TEST_ROOT/a/MANIFEST.json"
 
-          python3 scripts/make-sha256sums.py --bundle "$TEST_ROOT/a"
+          python3 scripts/make-sha256sums.py --bundle "$TEST_ROOT/a" --build-contract config/build-contract.json
 
           GITHUB_RUN_ID=999999 \
           GITHUB_EVENT_NAME=schedule \
@@ -175,7 +319,7 @@ jobs:
             --bundle "$TEST_ROOT/b" \
             --output "$TEST_ROOT/b/MANIFEST.json"
 
-          python3 scripts/make-sha256sums.py --bundle "$TEST_ROOT/b"
+          python3 scripts/make-sha256sums.py --bundle "$TEST_ROOT/b" --build-contract config/build-contract.json
 
           MANIFEST_A_SHA="$(sha256sum "$TEST_ROOT/a/MANIFEST.json" | awk '{print $1}')"
           MANIFEST_B_SHA="$(sha256sum "$TEST_ROOT/b/MANIFEST.json" | awk '{print $1}')"
@@ -252,28 +396,31 @@ jobs:
           echo "RESULT=PASS"
 
   build:
-    if: ${{ !inputs.manifest_v2_determinism_test }}
+    needs: mode
+    if: ${{ needs.mode.outputs.run_build == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
-      # write is required here only so the GITHUB_TOKEN has push-level visibility
-      # of existing draft releases when calculating the next collision-free tag.
-      contents: write
+      contents: read
     outputs:
       no_changes: ${{ steps.meta.outputs.no_changes }}
       tag: ${{ steps.meta.outputs.tag }}
       input_fingerprint: ${{ steps.meta.outputs.input_fingerprint }}
       previous_production: ${{ steps.meta.outputs.previous_production }}
       last_updated: ${{ steps.meta.outputs.last_updated }}
+      schedule_eligible: ${{ steps.meta.outputs.schedule_eligible }}
+      change_reasons: ${{ steps.meta.outputs.change_reasons }}
     env:
-      GH_TOKEN: ${{ github.token }}
       BASELINE_FILE: config/baseline-2026.09.25.3.json
       POLICY_FILE: config/routing-policy.json
       BASELINE_POLICY_FILE: config/baseline-routing-policy-2026.09.25.3.json
       MANIFEST_CONFIG: config/manifest-schema-v2.json
+      BUILD_CONTRACT: config/build-contract.json
 
     steps:
       - name: Checkout automation repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up pinned Go
         uses: actions/setup-go@v5
@@ -322,6 +469,8 @@ jobs:
           PY
 
       - name: Download and verify immutable baseline templates
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -348,6 +497,8 @@ jobs:
           PY
 
       - name: Discover and prepare baseline inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -404,10 +555,11 @@ jobs:
             --provenance work/provenance-baseline-discovered.json \
             --relevant-hash "$RELEVANT_HASH" \
             --policy-sha "$POLICY_SHA" \
+            --fingerprint-schema legacy-v1 \
             --output work/provenance-baseline.json
 
       - name: Prepare baseline reproduction mode
-        if: ${{ inputs.baseline_reproduction }}
+        if: ${{ needs.mode.outputs.baseline_reproduction == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -435,8 +587,47 @@ jobs:
           ln -s "$PWD/work/datprofile-baseline.json" work/datprofile-candidate.json
           ln -s "$PWD/work/inputs/baseline-geoip.dat" work/geoip-candidate.dat
 
+      - name: Inspect current published production
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/current-production
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > work/current-production/release.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("work/current-production/release.json").read_text())
+          assets={a.get("name"):a for a in r.get("assets",[])}
+          for name in ("MANIFEST.json","UDAL-ROUTING.json"):
+              a=assets.get(name)
+              if not a or not isinstance(a.get("id"),int):
+                  raise SystemExit(f"FAIL: current production asset missing: {name}")
+              Path(f"work/current-production/{name}.asset-id").write_text(str(a["id"]))
+          PY
+
+          MANIFEST_ID="$(cat work/current-production/MANIFEST.json.asset-id)"
+          ROUTING_ID="$(cat work/current-production/UDAL-ROUTING.json.asset-id)"
+          gh api "repos/$GITHUB_REPOSITORY/releases/assets/$MANIFEST_ID" \
+            -H "Accept: application/octet-stream" > work/current-production/MANIFEST.json
+          gh api "repos/$GITHUB_REPOSITORY/releases/assets/$ROUTING_ID" \
+            -H "Accept: application/octet-stream" > work/current-production/UDAL-ROUTING.json
+
+          python3 scripts/inspect-current-production.py \
+            --release-json work/current-production/release.json \
+            --manifest work/current-production/MANIFEST.json \
+            --routing work/current-production/UDAL-ROUTING.json \
+            --baseline "$BASELINE_FILE" \
+            --build-contract "$BUILD_CONTRACT" \
+            --output work/current-production.json
+
       - name: Discover and prepare current upstream
-        if: ${{ !inputs.baseline_reproduction }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -488,16 +679,22 @@ jobs:
             --provenance work/provenance-current-discovered.json \
             --relevant-hash "$RELEVANT_HASH" \
             --policy "$POLICY_FILE" \
+            --fingerprint-schema v2 \
+            --build-contract "$BUILD_CONTRACT" \
             --output work/provenance-current.json
 
-          BASE_FP="$(python3 -c 'import json; print(json.load(open("work/provenance-baseline.json"))["inputFingerprint"])')"
+          python3 scripts/classify-change.py \
+            --current-production work/current-production.json \
+            --provenance work/provenance-current.json \
+            --build-contract "$BUILD_CONTRACT" \
+            --output work/change-reasons.json
+
           CUR_FP="$(python3 -c 'import json; print(json.load(open("work/provenance-current.json"))["inputFingerprint"])')"
 
           python3 scripts/release-state.py \
-            --repo "$GITHUB_REPOSITORY" \
-            --baseline "$BASELINE_FILE" \
-            --baseline-fingerprint "$BASE_FP" \
+            --current-production work/current-production.json \
             --current-fingerprint "$CUR_FP" \
+            --run-number "$GITHUB_RUN_NUMBER" \
             --output work/release-state.json
 
           python3 - <<'PY'
@@ -507,6 +704,7 @@ jobs:
 
           prov = json.loads(Path("work/provenance-current.json").read_text())
           state = json.loads(Path("work/release-state.json").read_text())
+          changes = json.loads(Path("work/change-reasons.json").read_text())
 
           timestamps = [
               prov["domainListCommunity"]["timestamp"],
@@ -519,6 +717,8 @@ jobs:
           meta = {
               "mode": "current",
               "noChanges": bool(state["noChanges"]),
+              "scheduleAutoPublishEligible": bool(changes["scheduledAutoPublishEligible"]),
+              "changeReasons": changes["changeReasons"],
               "tag": state["newTag"],
               "lastUpdated": last_updated,
               "previousProduction": state["previousProductionRelease"],
@@ -546,6 +746,8 @@ jobs:
           print("input_fingerprint=" + m["inputFingerprint"])
           print("previous_production=" + m["previousProduction"])
           print("last_updated=" + str(m["lastUpdated"]))
+          print("schedule_eligible=" + str(m.get("scheduleAutoPublishEligible", False)).lower())
+          print("change_reasons=" + ",".join(m.get("changeReasons", [])))
           PY
 
           cat work/candidate-meta.json
@@ -568,6 +770,14 @@ jobs:
             echo "- previousProductionRelease: ${{ steps.meta.outputs.previous_production }}"
             echo "- inputFingerprint: ${{ steps.meta.outputs.input_fingerprint }}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Block scheduled publish for non-upstream-only changes
+        if: ${{ needs.mode.outputs.run_mode == 'scheduled' && steps.meta.outputs.no_changes != 'true' && steps.meta.outputs.schedule_eligible != 'true' }}
+        shell: bash
+        run: |
+          echo "RESULT=MANUAL_REVIEW_REQUIRED"
+          echo "CHANGE_REASONS=${{ steps.meta.outputs.change_reasons }}"
+          exit 1
 
       - name: Stop cleanly when inputs are unchanged
         if: ${{ steps.meta.outputs.no_changes == 'true' }}
@@ -599,8 +809,10 @@ jobs:
             work/bundle \
             "$GEOIP_SHA"
 
-      - name: Install and verify pinned Xray
+      - name: Download pinned Xray
         if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -623,6 +835,11 @@ jobs:
             -H "Accept: application/octet-stream" > work/xray.zip
           test "$(sha256sum work/xray.zip | awk '{print $1}')" = "$XRAY_SHA"
 
+      - name: Verify pinned Xray executable
+        if: ${{ steps.meta.outputs.no_changes != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p work/xray
           unzip -q work/xray.zip -d work/xray
           chmod +x work/xray/xray
@@ -634,7 +851,7 @@ jobs:
         run: |
           set -euo pipefail
           POLICY_FOR_BUILD="$POLICY_FILE"
-          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
+          if [[ "${{ needs.mode.outputs.baseline_reproduction }}" == "true" ]]; then
             POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
           fi
 
@@ -647,13 +864,13 @@ jobs:
             config/validation-contract.json \
             work/geodata-validation
 
-      - name: Build version-pinned routing
+      - name: Build snapshot and live routing
         if: ${{ steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           POLICY_FOR_BUILD="$POLICY_FILE"
-          if [[ "${{ inputs.baseline_reproduction }}" == "true" ]]; then
+          if [[ "${{ needs.mode.outputs.baseline_reproduction }}" == "true" ]]; then
             POLICY_FOR_BUILD="$BASELINE_POLICY_FILE"
           fi
 
@@ -662,11 +879,23 @@ jobs:
             --policy "$POLICY_FOR_BUILD" \
             --repo "$GITHUB_REPOSITORY" \
             --tag "${{ steps.meta.outputs.tag }}" \
+            --url-mode snapshot \
             --last-updated "${{ steps.meta.outputs.last_updated }}" \
             --output work/bundle/UDAL-ROUTING.json
 
+          if [[ "${{ needs.mode.outputs.baseline_reproduction }}" != "true" ]]; then
+            python3 scripts/build-routing.py \
+              --template work/baseline-release/UDAL-ROUTING.json \
+              --policy "$POLICY_FOR_BUILD" \
+              --repo "$GITHUB_REPOSITORY" \
+              --tag "${{ steps.meta.outputs.tag }}" \
+              --url-mode live \
+              --last-updated "${{ steps.meta.outputs.last_updated }}" \
+              --output work/bundle/UDAL-ROUTING-LIVE.json
+          fi
+
       - name: Verify minimal routing semantic diff
-        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -682,12 +911,13 @@ jobs:
           python3 scripts/scan-secrets.py --repo-root . --bundle work/bundle
 
       - name: Build deterministic MANIFEST v2 and SHA256SUMS
-        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/make-manifest.py \
             --manifest-config "$MANIFEST_CONFIG" \
+            --build-contract config/build-contract.json \
             --toolchain-lock config/toolchain-lock.json \
             --validation-contract config/validation-contract.json \
             --policy "$POLICY_FILE" \
@@ -699,10 +929,10 @@ jobs:
             --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}" \
             --output work/bundle/MANIFEST.json
 
-          python3 scripts/make-sha256sums.py --bundle work/bundle
+          python3 scripts/make-sha256sums.py --bundle work/bundle --build-contract config/build-contract.json
 
       - name: Verify deterministic MANIFEST v2 and SHA256SUMS
-        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -710,9 +940,11 @@ jobs:
           cp work/bundle/UDAL-GEOSITE.dat work/repeat-bundle/
           cp work/bundle/UDAL-GEOIP.dat work/repeat-bundle/
           cp work/bundle/UDAL-ROUTING.json work/repeat-bundle/
+          cp work/bundle/UDAL-ROUTING-LIVE.json work/repeat-bundle/
 
           python3 scripts/make-manifest.py \
             --manifest-config "$MANIFEST_CONFIG" \
+            --build-contract config/build-contract.json \
             --toolchain-lock config/toolchain-lock.json \
             --validation-contract config/validation-contract.json \
             --policy "$POLICY_FILE" \
@@ -724,7 +956,7 @@ jobs:
             --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}" \
             --output work/repeat-bundle/MANIFEST.json
 
-          python3 scripts/make-sha256sums.py --bundle work/repeat-bundle
+          python3 scripts/make-sha256sums.py --bundle work/repeat-bundle --build-contract config/build-contract.json
 
           cmp work/bundle/MANIFEST.json work/repeat-bundle/MANIFEST.json
           cmp work/bundle/SHA256SUMS work/repeat-bundle/SHA256SUMS
@@ -732,7 +964,7 @@ jobs:
           echo "SHA256SUMS_DETERMINISM=PASS"
 
       - name: Final validation and secret scan
-        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -743,6 +975,7 @@ jobs:
             --policy "$POLICY_FILE" \
             --contract config/validation-contract.json \
             --manifest-config "$MANIFEST_CONFIG" \
+            --build-contract "$BUILD_CONTRACT" \
             --toolchain-lock config/toolchain-lock.json \
             --provenance work/candidate-provenance.json \
             --repo "$GITHUB_REPOSITORY" \
@@ -752,7 +985,7 @@ jobs:
             --input-fingerprint "${{ steps.meta.outputs.input_fingerprint }}"
 
       - name: Legacy 2026.09.25.3 core reproduction gate
-        if: ${{ inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction == 'true' && steps.meta.outputs.no_changes != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -781,7 +1014,7 @@ jobs:
           PY
 
       - name: Upload validated build artifact
-        if: ${{ !inputs.baseline_reproduction && steps.meta.outputs.no_changes != 'true' }}
+        if: ${{ needs.mode.outputs.baseline_reproduction != 'true' && steps.meta.outputs.no_changes != 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: geo-candidate-${{ github.run_id }}
@@ -793,8 +1026,8 @@ jobs:
           retention-days: 7
 
   draft:
-    needs: build
-    if: ${{ !inputs.manifest_v2_determinism_test && !inputs.baseline_reproduction && !inputs.dry_run && needs.build.outputs.no_changes == 'false' }}
+    needs: [mode, build]
+    if: ${{ needs.mode.outputs.manifest_test != 'true' && needs.mode.outputs.baseline_reproduction != 'true' && needs.mode.outputs.dry_run != 'true' && needs.build.outputs.no_changes == 'false' && (needs.mode.outputs.run_mode == 'manual' || needs.build.outputs.schedule_eligible == 'true') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -812,11 +1045,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(find work/bundle -maxdepth 1 -type f | wc -l | tr -d ' ')" = "5"
+          test "$(find work/bundle -maxdepth 1 -type f | wc -l | tr -d ' ')" = "6"
           (
             cd work/bundle
             sha256sum -c SHA256SUMS
           )
+
+      - name: Fail closed on stale draft or tag collision
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.build.outputs.tag }}"
+          FP="${{ needs.build.outputs.input_fingerprint }}"
+
+          python3 scripts/fetch-release-inventory.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --output work/releases-before-mutation.json
+
+          python3 scripts/check-mutation-state.py \
+            --releases-json work/releases-before-mutation.json \
+            --planned-tag "$TAG" \
+            --fingerprint "$FP" \
+            --output work/mutation-state.json
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "FAIL: planned tag already exists: $TAG" >&2
+            exit 1
+          fi
 
       - name: Create and verify draft release
         shell: bash
@@ -871,14 +1126,14 @@ jobs:
               "",
               "SHA256:",
           ]
-          for name in ["UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","MANIFEST.json","SHA256SUMS"]:
+          for name in ["UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","UDAL-ROUTING-LIVE.json","MANIFEST.json","SHA256SUMS"]:
               h = hashlib.sha256((bundle / name).read_bytes()).hexdigest()
               lines.append(f"{h}  {name}")
           lines.extend([
               "",
               f"INPUT_FINGERPRINT={fp}",
               f"ROUTING_LAST_UPDATED={last_updated}",
-              "AUTO_PUBLISH=NO",
+              "AUTO_PUBLISH_POLICY=SCHEDULE_UPSTREAM_ONLY",
           ])
           Path("work/release-notes.txt").write_text("\n".join(lines) + "\n")
           payload = {
@@ -905,6 +1160,7 @@ jobs:
             work/bundle/UDAL-GEOSITE.dat \
             work/bundle/UDAL-GEOIP.dat \
             work/bundle/UDAL-ROUTING.json \
+            work/bundle/UDAL-ROUTING-LIVE.json \
             work/bundle/MANIFEST.json \
             work/bundle/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY"
@@ -919,8 +1175,8 @@ jobs:
           if r.get("draft") is not True or r.get("published_at") is not None:
               raise SystemExit("FAIL: release is not draft")
           assets = r.get("assets", [])
-          expected = {"UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","MANIFEST.json","SHA256SUMS"}
-          if {a["name"] for a in assets} != expected or len(assets) != 5:
+          expected = {"UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","UDAL-ROUTING-LIVE.json","MANIFEST.json","SHA256SUMS"}
+          if {a["name"] for a in assets} != expected or len(assets) != 6:
               raise SystemExit("FAIL: remote draft asset set")
           for a in assets:
               local = hashlib.sha256((Path("work/bundle") / a["name"]).read_bytes()).hexdigest()
@@ -934,23 +1190,28 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --dir work/remote-download
 
-          python3 - <<'PY'
-          import hashlib
-          from pathlib import Path
+          python3 scripts/verify-draft-release.py \
+            --release-json work/remote-release.json \
+            --bundle work/bundle \
+            --remote-dir work/remote-download \
+            --build-contract config/build-contract.json \
+            --expected-rid "$RID" \
+            --expected-tag "$TAG"
 
-          local = Path("work/bundle")
-          remote = Path("work/remote-download")
-          expected = sorted(["UDAL-GEOSITE.dat","UDAL-GEOIP.dat","UDAL-ROUTING.json","MANIFEST.json","SHA256SUMS"])
-          if sorted(x.name for x in remote.iterdir() if x.is_file()) != expected:
-              raise SystemExit("FAIL: downloaded draft asset set")
-          for name in expected:
-              a = hashlib.sha256((local / name).read_bytes()).hexdigest()
-              b = hashlib.sha256((remote / name).read_bytes()).hexdigest()
-              if a != b:
-                  raise SystemExit(f"FAIL: downloaded draft mismatch {name}")
-          print("REMOTE_DRAFT_DOWNLOAD=PASS")
-          PY
-
+          printf '%s\n' "$RID" > work/release-id.txt
           trap - ERR
           echo "DRAFT_TAG=$TAG"
-          echo "DRAFT_PUBLISHED=NO"
+          echo "DRAFT_REMOTE_VALIDATION=PASS"
+
+      - name: Publish exact validated draft on scheduled upstream-only change
+        if: ${{ needs.mode.outputs.auto_publish == 'true' && needs.build.outputs.schedule_eligible == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/publish-validated-draft.sh \
+            "$GITHUB_REPOSITORY" \
+            "${{ needs.build.outputs.tag }}" \
+            "$(cat work/release-id.txt)" \
+            work/bundle \
+            config/build-contract.json \
+            work/post-publish

@@ -11,13 +11,20 @@ def args():
     p.add_argument("--policy", required=True)
     p.add_argument("--repo", required=True)
     p.add_argument("--tag", required=True)
+    p.add_argument("--url-mode", choices=["snapshot", "live"], required=True)
     p.add_argument("--last-updated", type=int, required=True)
     p.add_argument("--output", required=True)
     return p.parse_args()
 
 
-def desired(policy, repo, tag, last_updated):
-    prefix = f"https://github.com/{repo}/releases/download/{tag}"
+def desired(policy, repo, tag, last_updated, url_mode):
+    if url_mode == "snapshot":
+        prefix = f"https://github.com/{repo}/releases/download/{tag}"
+    elif url_mode == "live":
+        prefix = f"https://github.com/{repo}/releases/latest/download"
+    else:
+        raise ValueError(f"unsupported url mode: {url_mode}")
+
     return {
         "Name": policy["name"],
         "GlobalProxy": policy["globalProxy"],
@@ -64,7 +71,7 @@ def main():
     raw = raw_bytes.decode("utf-8")
     base = json.loads(raw)
     policy = json.loads(Path(a.policy).read_text(encoding="utf-8"))
-    want = desired(policy, a.repo, a.tag, a.last_updated)
+    want = desired(policy, a.repo, a.tag, a.last_updated, a.url_mode)
 
     for key in want:
         if key not in base:
@@ -103,6 +110,7 @@ def main():
     target.write_bytes(out.encode("utf-8"))
 
     print(f"ROUTING_BUILD_MODE={mode}")
+    print(f"ROUTING_URL_MODE={a.url_mode}")
     print(f"ROUTING_TAG={a.tag}")
     print(f"ROUTING_LAST_UPDATED={a.last_updated}")
     print("BUILD_ROUTING=PASS")
