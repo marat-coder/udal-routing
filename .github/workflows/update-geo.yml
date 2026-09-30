@@ -1035,6 +1035,12 @@ jobs:
       GH_TOKEN: ${{ github.token }}
 
     steps:
+      - name: Checkout automation repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - name: Download validated candidate
         uses: actions/download-artifact@v4
         with:
