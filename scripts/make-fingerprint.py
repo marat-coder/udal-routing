@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from fingerprint_v2 import build_fingerprint_v2
+
 
 def file_sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -41,22 +43,32 @@ identity = {
 
 if a.fingerprint_schema == "legacy-v1":
     prov["fingerprintSchema"] = 1
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    fp = hashlib.sha256(canonical).hexdigest()
+    prov["fingerprintComponents"] = identity
 else:
     if not a.build_contract:
         raise SystemExit("FAIL: --build-contract is required for fingerprint schema v2")
     build_contract_path = Path(a.build_contract)
     build_contract = json.loads(build_contract_path.read_text(encoding="utf-8"))
     build_sha = file_sha256(build_contract_path)
-    identity["buildContractSha256"] = build_sha
+    try:
+        fp, identity = build_fingerprint_v2(
+            v2fly_relevant_hash=a.relevant_hash,
+            ru_blocked_sha256=prov["ruBlockedGeosite"]["sha256"],
+            geoip_sha256=prov["geoip"]["sha256"],
+            routing_policy_sha256=policy_sha,
+            build_contract_sha256=build_sha,
+        )
+    except ValueError as e:
+        raise SystemExit(f"FAIL: {e}")
     prov["fingerprintSchema"] = 2
     prov["buildContractSha256"] = build_sha
     prov["buildContractId"] = build_contract["contractId"]
     prov["urlModelId"] = build_contract["urlModel"]["id"]
+    prov["fingerprintComponents"] = identity
 
-canonical = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-fp = hashlib.sha256(canonical).hexdigest()
 prov["inputFingerprint"] = fp
-prov["fingerprintComponents"] = identity
 
 Path(a.output).write_text(json.dumps(prov, indent=2) + "\n", encoding="utf-8")
 print(f"FINGERPRINT_SCHEMA={prov['fingerprintSchema']}")
