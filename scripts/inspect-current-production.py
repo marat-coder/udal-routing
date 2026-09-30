@@ -5,6 +5,12 @@ import json
 import re
 from pathlib import Path
 
+from fingerprint_v2 import (
+    FINGERPRINT_V2_KEYS,
+    FINGERPRINT_V2_SCHEMA,
+    build_fingerprint_v2,
+)
+
 HEX64=re.compile(r"^[0-9a-f]{64}$")
 
 def sha256(path):
@@ -93,7 +99,7 @@ def inspect_v2(release,manifest_path,routing_path,contract):
     tag=require_release_state(release)
     assets=asset_map(release)
     expected=set(contract["artifactSet"])
-    if set(assets)!=expected:
+    if set(assets)!=expected or len(assets)!=len(expected):
         raise SystemExit("FAIL: v2 current production asset set")
     if assets["MANIFEST.json"].get("digest")!="sha256:"+sha256(manifest_path):
         raise SystemExit("FAIL: v2 MANIFEST digest mismatch")
@@ -106,24 +112,41 @@ def inspect_v2(release,manifest_path,routing_path,contract):
         raise SystemExit("FAIL: current production manifest schema unsupported")
     if m.get("revision")!=tag or m.get("status")!="PRODUCTION" or m.get("importAllowed") is not True:
         raise SystemExit("FAIL: current production manifest release gate")
+
     bp=m.get("buildPlan")
     bc=m.get("buildContract")
     src=m.get("source")
     rp=m.get("routingPolicy")
     if not all(isinstance(x,dict) for x in (bp,bc,src,rp)):
         raise SystemExit("FAIL: current production manifest control-plane metadata missing")
-    fp=require_hex64(bp.get("inputFingerprint"),"current production fingerprint")
     if bp.get("targetRelease")!=tag:
         raise SystemExit("FAIL: current production targetRelease mismatch")
     if bp.get("routingLastUpdated")!=routing.get("LastUpdated"):
         raise SystemExit("FAIL: current production LastUpdated mismatch")
-    if src.get("fingerprintSchema")!=2:
+
+    relevant=require_hex64(
+        src.get("domainListCommunity",{}).get("relevantHash"),
+        "current production relevant hash",
+    )
+    ru=require_hex64(
+        src.get("ruBlockedGeosite",{}).get("sha256"),
+        "current production ru-blocked hash",
+    )
+    geoip=require_hex64(
+        src.get("geoip",{}).get("sha256"),
+        "current production geoip hash",
+    )
+    policy_sha=require_hex64(
+        rp.get("sha256"),
+        "current production routing policy hash",
+    )
+    build_sha=require_hex64(
+        bc.get("sha256"),
+        "current production build contract hash",
+    )
+
+    if src.get("fingerprintSchema")!=FINGERPRINT_V2_SCHEMA:
         raise SystemExit("FAIL: current production fingerprint schema")
-    relevant=require_hex64(src.get("domainListCommunity",{}).get("relevantHash"),"current production relevant hash")
-    ru=require_hex64(src.get("ruBlockedGeosite",{}).get("sha256"),"current production ru-blocked hash")
-    geoip=require_hex64(src.get("geoip",{}).get("sha256"),"current production geoip hash")
-    policy_sha=require_hex64(rp.get("sha256"),"current production routing policy hash")
-    build_sha=require_hex64(bc.get("sha256"),"current production build contract hash")
     if src.get("routingPolicySha256")!=policy_sha:
         raise SystemExit("FAIL: current production routing-policy provenance mismatch")
     if src.get("buildContractSha256")!=build_sha:
@@ -132,6 +155,41 @@ def inspect_v2(release,manifest_path,routing_path,contract):
         raise SystemExit("FAIL: current production build-contract id mismatch")
     if src.get("urlModelId")!=bc.get("urlModelId"):
         raise SystemExit("FAIL: current production URL-model mismatch")
+
+    try:
+        recomputed_fp, expected_components=build_fingerprint_v2(
+            v2fly_relevant_hash=relevant,
+            ru_blocked_sha256=ru,
+            geoip_sha256=geoip,
+            routing_policy_sha256=policy_sha,
+            build_contract_sha256=build_sha,
+        )
+    except ValueError as e:
+        raise SystemExit(f"FAIL: current production fingerprint components invalid: {e}")
+
+    buildplan_fp=require_hex64(
+        bp.get("inputFingerprint"),
+        "buildPlan input fingerprint",
+    )
+    source_fp=require_hex64(
+        src.get("inputFingerprint"),
+        "source input fingerprint",
+    )
+    if buildplan_fp!=recomputed_fp:
+        raise SystemExit("FAIL: buildPlan.inputFingerprint does not match recomputed fingerprint")
+    if source_fp!=recomputed_fp:
+        raise SystemExit("FAIL: source.inputFingerprint does not match recomputed fingerprint")
+
+    components=src.get("fingerprintComponents")
+    if not isinstance(components,dict):
+        raise SystemExit("FAIL: source.fingerprintComponents missing")
+    if set(components)!=set(FINGERPRINT_V2_KEYS):
+        raise SystemExit("FAIL: source.fingerprintComponents key set mismatch")
+    if components.get("fingerprintSchema")!=FINGERPRINT_V2_SCHEMA:
+        raise SystemExit("FAIL: source.fingerprintComponents schema mismatch")
+    if components!=expected_components:
+        raise SystemExit("FAIL: source.fingerprintComponents values mismatch")
+
     artifacts=m.get("artifacts")
     if not isinstance(artifacts,dict):
         raise SystemExit("FAIL: current production manifest artifacts missing")
@@ -144,12 +202,13 @@ def inspect_v2(release,manifest_path,routing_path,contract):
             raise SystemExit(f"FAIL: current production artifact digest mismatch {name}")
         if a.get("size")!=md.get("size"):
             raise SystemExit(f"FAIL: current production artifact size mismatch {name}")
+
     return {
         "releaseId":release["id"],
         "tag":tag,
         "manifestSchema":2,
-        "fingerprintSchema":2,
-        "inputFingerprint":fp,
+        "fingerprintSchema":FINGERPRINT_V2_SCHEMA,
+        "inputFingerprint":recomputed_fp,
         "lastUpdated":routing["LastUpdated"],
         "v2flyRelevantHash":relevant,
         "ruBlockedSha256":ru,
