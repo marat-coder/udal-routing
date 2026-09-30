@@ -214,13 +214,12 @@ jobs:
           rm -rf "$TEST_ROOT"
           mkdir -p "$TEST_ROOT/a" "$TEST_ROOT/b"
 
-          cat > "$TEST_ROOT/frozen-provenance.json" <<'JSON'
+          cat > "$TEST_ROOT/frozen-provenance-raw.json" <<'JSON'
           {
             "domainListCommunity": {
               "repository": "v2fly/domain-list-community",
               "commit": "a5731758ed6bc9620b0e146ed24b07b9131893cf",
-              "timestamp": "2026-09-25T00:00:00Z",
-              "relevantHash": "c826e971a42c88920069cb6d7c14b3e7fb5da018db88f0cccc9d30485e07d34b"
+              "timestamp": "2026-09-25T00:00:00Z"
             },
             "ruBlockedGeosite": {
               "repository": "runetfreedom/russia-blocked-geosite",
@@ -238,11 +237,19 @@ jobs:
               "sha256": "0918202112fa7cd038dc81254f8ae637f8aaf9b02311898ccd22ba079592cbac",
               "publishedAt": "2026-09-25T08:42:07Z",
               "model": "FULL_PINNED_RUNETFREEDOM_BYTE_FOR_BYTE"
-            },
-            "routingPolicySha256": "8654b9f9b941e0e43c384eee5adb152d113916286cc75abc5faa8a17a0133942",
-            "inputFingerprint": "84fc3cf8124fcbdc1a6c753ce4825211bf4b7c45e940265ce2b7d94f29c49c9f"
+            }
           }
           JSON
+
+          python3 scripts/make-fingerprint.py \
+            --provenance "$TEST_ROOT/frozen-provenance-raw.json" \
+            --relevant-hash c826e971a42c88920069cb6d7c14b3e7fb5da018db88f0cccc9d30485e07d34b \
+            --policy config/routing-policy.json \
+            --fingerprint-schema v2 \
+            --build-contract config/build-contract.json \
+            --output "$TEST_ROOT/frozen-provenance.json"
+
+          FROZEN_FP="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["inputFingerprint"])' "$TEST_ROOT/frozen-provenance.json")"
 
           cat > "$TEST_ROOT/runtime-a.json" <<'JSON'
           {
@@ -289,7 +296,7 @@ jobs:
             --tag 2099.01.01.999
             --previous-production 2026.09.25.3
             --last-updated 1790327433
-            --input-fingerprint 84fc3cf8124fcbdc1a6c753ce4825211bf4b7c45e940265ce2b7d94f29c49c9f
+            --input-fingerprint "$FROZEN_FP"
           )
 
           GITHUB_RUN_ID=111111 \
