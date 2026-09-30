@@ -1051,7 +1051,10 @@ jobs:
           TAG="${{ needs.build.outputs.tag }}"
           FP="${{ needs.build.outputs.input_fingerprint }}"
 
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > work/releases-before-mutation.json
+          python3 scripts/fetch-release-inventory.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --output work/releases-before-mutation.json
+
           python3 scripts/check-mutation-state.py \
             --releases-json work/releases-before-mutation.json \
             --planned-tag "$TAG" \
