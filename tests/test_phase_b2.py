@@ -98,6 +98,33 @@ class PhaseB2Tests(unittest.TestCase):
         self.assertIn('test -z "${GH_TOKEN:-}"',smoke)
         self.assertIn('test -z "${GITHUB_TOKEN:-}"',smoke)
 
+    def test_draft_job_checkout_precedes_repository_scripts(self):
+        wf=(ROOT/".github/workflows/update-geo.yml").read_text()
+        draft=wf.split("\n  draft:",1)[1]
+        checkout_name="- name: Checkout automation repository"
+        checkout_pos=draft.find(checkout_name)
+        self.assertGreaterEqual(checkout_pos,0,"draft job checkout missing")
+        next_step=draft.find("\n      - name:",checkout_pos+len(checkout_name))
+        checkout=draft[checkout_pos:next_step if next_step >= 0 else len(draft)]
+        self.assertIn("uses: actions/checkout@v4",checkout)
+        self.assertIn("ref: ${{ github.sha }}",checkout)
+        self.assertIn("persist-credentials: false",checkout)
+
+        first_repo_script=re.search(r"(?m)^\s+(?:python3\s+)?scripts/[^\s\\]+",draft)
+        self.assertIsNotNone(first_repo_script,"draft job has no repository script invocation")
+        self.assertLess(checkout_pos,first_repo_script.start())
+
+        for script in (
+            "scripts/fetch-release-inventory.py",
+            "scripts/check-mutation-state.py",
+            "scripts/verify-draft-release.py",
+            "scripts/publish-validated-draft.sh",
+        ):
+            with self.subTest(script=script):
+                script_pos=draft.find(script)
+                self.assertGreaterEqual(script_pos,0,f"draft job missing {script}")
+                self.assertLess(checkout_pos,script_pos)
+
     def test_run_mode_normalization_and_workflow_gates(self):
         ci=normalizer.normalize("pull_request")
         self.assertEqual(ci["run_mode"],"ci")
