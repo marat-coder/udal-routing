@@ -125,6 +125,39 @@ class PhaseB2Tests(unittest.TestCase):
                 self.assertGreaterEqual(script_pos,0,f"draft job missing {script}")
                 self.assertLess(checkout_pos,script_pos)
 
+    def test_scheduled_publish_step_requires_explicit_bash_invocation(self):
+        wf=(ROOT/".github/workflows/update-geo.yml").read_text()
+        draft=wf.split("\n  draft:",1)[1]
+        publish_name="- name: Publish exact validated draft on scheduled upstream-only change"
+        checkout_name="- name: Checkout automation repository"
+
+        publish_pos=draft.find(publish_name)
+        self.assertGreaterEqual(publish_pos,0,"scheduled publish step missing")
+        checkout_pos=draft.find(checkout_name)
+        self.assertGreaterEqual(checkout_pos,0,"draft job checkout missing")
+        self.assertLess(checkout_pos,publish_pos,"checkout must precede publish helper usage")
+
+        next_step=draft.find("\n      - name:",publish_pos+len(publish_name))
+        publish_step=draft[publish_pos:next_step if next_step >= 0 else len(draft)]
+
+        helper_invocations=re.findall(
+            r"(?m)^\s*(?:(?:bash|python3)\s+)?(scripts/[^\s\\]+)",
+            publish_step,
+        )
+        self.assertEqual(
+            helper_invocations,
+            ["scripts/publish-validated-draft.sh"],
+            "publish step must invoke only the validated-draft helper",
+        )
+        self.assertRegex(
+            publish_step,
+            r"(?m)^\s*bash\s+scripts/publish-validated-draft\.sh\s+\\$",
+        )
+        self.assertNotRegex(
+            publish_step,
+            r"(?m)^\s*scripts/publish-validated-draft\.sh(?:\s|$)",
+        )
+
     def test_run_mode_normalization_and_workflow_gates(self):
         ci=normalizer.normalize("pull_request")
         self.assertEqual(ci["run_mode"],"ci")
