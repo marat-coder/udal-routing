@@ -1214,7 +1214,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          scripts/publish-validated-draft.sh \
+          bash scripts/publish-validated-draft.sh \
             "$GITHUB_REPOSITORY" \
             "${{ needs.build.outputs.tag }}" \
             "$(cat work/release-id.txt)" \
