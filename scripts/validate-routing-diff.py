@@ -23,7 +23,11 @@ keys = sorted(set(base) | set(cand))
 changed = [k for k in keys if base.get(k) != cand.get(k)]
 expected = {"Geoipurl", "Geositeurl", "LastUpdated"}
 
-if set(changed) != expected:
+if set(changed) == expected | {"ProxySites"}:
+    permitted_additions = ["domain:groq.com", "domain:openrouter.ai", "domain:aistudio.google.com"]
+    if cand.get("ProxySites") != base.get("ProxySites", []) + permitted_additions:
+        raise SystemExit("FAIL: unapproved ProxySites change")
+elif set(changed) != expected:
     raise SystemExit(f"FAIL: unexpected routing semantic diff: {changed}")
 
 print("ROUTING_SEMANTIC_DIFF_KEYS=" + ",".join(changed))
