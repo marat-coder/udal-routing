@@ -72,6 +72,38 @@ class PhaseBContractTests(unittest.TestCase):
                 (bundle_b/"SHA256SUMS").read_bytes(),
             )
 
+    def test_ai_proxy_domain_policy_and_restricted_diff(self):
+        from common import POLICY, run, PY
+        import tempfile
+        policy=json.loads(POLICY.read_text())
+        additions=["domain:groq.com","domain:openrouter.ai","domain:aistudio.google.com"]
+        self.assertEqual(policy["proxySites"][-3:],additions)
+        self.assertEqual(sum(x.startswith("geosite:") for x in policy["proxySites"]),22)
+        with tempfile.TemporaryDirectory() as td:
+            baseline={
+                "ProxyIp":["geoip:telegram","geoip:facebook"],
+                "ProxySites":["geosite:openai"],
+                "Geoipurl":"https://example.invalid/old-geoip",
+                "Geositeurl":"https://example.invalid/old-geosite",
+                "LastUpdated":1,
+            }
+            candidate=dict(baseline)
+            candidate.update({
+                "ProxySites":baseline["ProxySites"]+additions,
+                "Geoipurl":"https://example.invalid/new-geoip",
+                "Geositeurl":"https://example.invalid/new-geosite",
+                "LastUpdated":2,
+            })
+            base_path=Path(td)/"base.json"
+            cand_path=Path(td)/"candidate.json"
+            base_path.write_text(json.dumps(baseline))
+            cand_path.write_text(json.dumps(candidate))
+            args=(PY,"scripts/validate-routing-diff.py","--baseline",str(base_path),"--candidate",str(cand_path))
+            self.assertIn("ROUTING_SEMANTIC_DIFF=PASS",run(*args).stdout)
+            candidate["ProxySites"]=baseline["ProxySites"]+["domain:google.com"]
+            cand_path.write_text(json.dumps(candidate))
+            self.assertNotEqual(run(*args,check=False).returncode,0)
+
 
 if __name__=="__main__":
     unittest.main()
