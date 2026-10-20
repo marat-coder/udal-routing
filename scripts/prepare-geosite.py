@@ -23,7 +23,7 @@ def load_policy(path: Path):
         policy = json.load(f)
 
     top = policy["geositeTopLevel"]
-    active = [x.removeprefix("geosite:") for x in policy["proxySites"]]
+    active = [x.removeprefix("geosite:") for x in policy["proxySites"] if x.startswith("geosite:")]
     reserve = policy["geositeReserve"]
 
     if len(top) != 31 or len(set(top)) != 31:
