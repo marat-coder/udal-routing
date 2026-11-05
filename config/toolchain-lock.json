@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "go": {
-    "version": "1.25.12"
+    "version": "1.26.10"
   },
   "domainListCommunityGenerator": {
     "baselineCommit": "a5731758ed6bc9620b0e146ed24b07b9131893cf",
