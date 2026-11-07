@@ -47,7 +47,10 @@
     "geosite:deezer",
     "geosite:tiktok",
     "geosite:disney",
-    "geosite:ru-blocked"
+    "geosite:ru-blocked",
+    "domain:groq.com",
+    "domain:openrouter.ai",
+    "domain:aistudio.google.com"
   ],
   "proxyIp": [
     "geoip:telegram",

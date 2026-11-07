@@ -50,7 +50,9 @@ for label,routing in (("snapshot",snap),("live",live)):
 if strip_urls(snap)!=strip_urls(live): raise SystemExit("FAIL: snapshot/live routing semantics differ outside GEO URLs")
 print("ROUTING_SEMANTIC_EQUIVALENCE=PASS")
 
-active={x.removeprefix("geosite:") for x in policy["proxySites"]}; reserve=set(policy["geositeReserve"]); top=set(policy["geositeTopLevel"])
+active={x.removeprefix("geosite:") for x in policy["proxySites"] if x.startswith("geosite:")}; reserve=set(policy["geositeReserve"]); top=set(policy["geositeTopLevel"])
+explicit=[x for x in policy["proxySites"] if not x.startswith("geosite:")]
+if explicit != ["domain:groq.com", "domain:openrouter.ai", "domain:aistudio.google.com"]: raise SystemExit("FAIL: unapproved explicit proxy domain policy")
 if (len(top),len(active),len(reserve))!=(31,22,9) or active|reserve!=top or active&reserve: raise SystemExit("FAIL: 31/22/9 contract mismatch")
 
 prefix=f"https://github.com/{a.repo}/releases/download/{a.tag}"
